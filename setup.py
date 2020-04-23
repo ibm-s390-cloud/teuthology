@@ -132,6 +132,7 @@ setup(
             'teuthology-reimage = scripts.reimage:main',
             'teuthology-dispatcher = scripts.dispatcher:main',
             'teuthology-wait = scripts.wait:main',
+            'teuthology-polarion = scripts.polarion:main',
             ],
         },
 
