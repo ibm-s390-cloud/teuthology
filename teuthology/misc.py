@@ -741,7 +741,7 @@ def pull_directory(remote, remotedir, localdir, write_to=copy_fileobj):
     if not os.path.exists(localdir):
         os.mkdir(localdir)
     r = remote.get_tar_stream(remotedir, sudo=True)
-    tar = tarfile.open(mode='r|gz', fileobj=r.stdout)
+    tar = tarfile.open(mode='r|gz', fileobj=r.stdout, dereference=True)
     while True:
         ti = tar.next()
         if ti is None:
@@ -751,7 +751,7 @@ def pull_directory(remote, remotedir, localdir, write_to=copy_fileobj):
             # ignore silently; easier to just create leading dirs below
             # XXX this mean empty dirs are not transferred
             pass
-        elif ti.isfile():
+        elif ti.isfile() or ti.issym():
             sub = safepath.munge(ti.name)
             safepath.makedirs(root=localdir, path=os.path.dirname(sub))
             with tar.extractfile(ti) as src:
