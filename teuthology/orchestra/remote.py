@@ -616,7 +616,7 @@ class Remote(RemoteShell):
             args.append('sudo')
         args.extend([
             'tar',
-            'cz',
+            'czh',
             '-f', '-',
             '-C', path,
             '--',
@@ -639,7 +639,7 @@ class Remote(RemoteShell):
             args.append('sudo')
         args.extend([
             'tar',
-            'cz',
+            'czh',
             '-f', '-',
             '-C', path,
             '--',
