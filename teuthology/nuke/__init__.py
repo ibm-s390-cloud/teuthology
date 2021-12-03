@@ -347,7 +347,7 @@ def nuke_helper(ctx, should_unlock, keep_logs, should_reboot):
     remove_osd_tmpfs(ctx)
     kill_hadoop(ctx)
     remove_ceph_packages(ctx)
-    synch_clocks(remotes)
+    # synch_clocks(remotes)
     unlock_firmware_repo(ctx)
     remove_configuration_files(ctx)
     undo_multipath(ctx)
