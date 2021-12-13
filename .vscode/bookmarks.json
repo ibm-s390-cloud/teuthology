@@ -1,0 +1,24 @@
+{
+	"files": [
+		{
+			"path": "teuthology/task/ceph_ansible.py",
+			"bookmarks": [
+				{
+					"line": 300,
+					"column": 42,
+					"label": ""
+				}
+			]
+		},
+		{
+			"path": "teuthology/run.py",
+			"bookmarks": [
+				{
+					"line": 378,
+					"column": 10,
+					"label": ""
+				}
+			]
+		}
+	]
+}

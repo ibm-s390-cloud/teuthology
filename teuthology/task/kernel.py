@@ -558,10 +558,17 @@ def install_and_reboot(ctx, need_install, config):
         # it's actually nested under that submenu.  If it gets more
         # complex this will totally break.
 
+        """
         kernel_entries = role_remote.sh([
                 'egrep',
                 '(submenu|menuentry.*' + kernel_title + ').*{',
                 '/boot/grub/grub.cfg'
+            ]).split('\n')
+        """
+        kernel_entries = role_remote.sh([
+                'egrep',
+                '(submenu|menuentry.*' + kernel_title + ').*{',
+                '/etc/zipl.conf'
             ]).split('\n')
         submenu_title = ''
         default_title = ''
@@ -578,6 +585,7 @@ def install_and_reboot(ctx, need_install, config):
         log.info('submenu_title:{}'.format(submenu_title))
         log.info('default_title:{}'.format(default_title))
 
+"""
         proc = role_remote.run(
             args=[
                 # use the title(s) to construct the content of
@@ -635,7 +643,7 @@ def install_and_reboot(ctx, need_install, config):
     for name, proc in procs.items():
         log.debug('Waiting for install on %s to complete...', name)
         proc.wait()
-
+"""
 
 def enable_disable_kdb(ctx, config):
     """
@@ -860,8 +868,12 @@ def install_kernel(remote, role_config, path=None, version=None):
     if package_type == 'deb':
         newversion = get_latest_image_version_deb(remote, dist_release, role_config)
         if 'ubuntu' in dist_release:
+            """
             grub2conf = teuthology.get_file(remote,
                 '/boot/grub/grub.cfg', sudo=True).decode()
+            """
+            grub2conf = teuthology.get_file(remote,
+                '/etc/zipl.conf', sudo=True).decode()
             submenu = ''
             menuentry = ''
             for line in grub2conf.split('\n'):
@@ -882,8 +894,8 @@ def install_kernel(remote, role_config, path=None, version=None):
             else:
                 grubvalue = menuentry
             grubfile = 'cat <<EOF\nset default="' + grubvalue + '"\nEOF'
-            teuthology.delete_file(remote, '/etc/grub.d/01_ceph_kernel', sudo=True, force=True)
-            teuthology.sudo_write_file(remote, '/etc/grub.d/01_ceph_kernel', StringIO(grubfile), '755')
+            # teuthology.delete_file(remote, '/etc/grub.d/01_ceph_kernel', sudo=True, force=True)
+            # teuthology.sudo_write_file(remote, '/etc/grub.d/01_ceph_kernel', StringIO(grubfile), '755')
             log.info('Distro Kernel Version: {version}'.format(version=newversion))
             # remote.run(args=['sudo', 'update-grub'])
             # remote.run(args=['sudo', 'shutdown', '-r', 'now'], wait=False )
@@ -915,7 +927,8 @@ def update_grub_rpm(remote, newversion):
             data += line + '\n'
         temp_file_path = remote.mktemp()
         teuthology.sudo_write_file(remote, temp_file_path, StringIO(data), '755')
-        teuthology.move_file(remote, temp_file_path, '/boot/grub/grub.conf', True)
+        # teuthology.move_file(remote, temp_file_path, '/boot/grub/grub.conf', True)
+        teuthology.move_file(remote, temp_file_path, '/etc/zipl.conf', True)
     else:
         #Update grub menu entry to new version.
         grub2_kernel_select_generic(remote, newversion, 'rpm')
@@ -930,10 +943,12 @@ def grub2_kernel_select_generic(remote, newversion, ostype):
     if ostype == 'rpm':
         grubset = 'grub2-set-default'
         mkconfig = 'grub2-mkconfig'
-        grubconfig = '/boot/grub2/grub.cfg'
+        # grubconfig = '/boot/grub2/grub.cfg'
+        grubconfig = '/etc/zipl.conf'
     if ostype == 'deb':
         grubset = 'grub-set-default'
-        grubconfig = '/boot/grub/grub.cfg'
+        # grubconfig = '/boot/grub/grub.cfg'
+        grubconfig = '/etc/zipl.conf'
         mkconfig = 'grub-mkconfig'
     remote.run(args=['sudo', mkconfig, '-o', grubconfig, ])
     grub2conf = teuthology.get_file(remote, grubconfig, sudo=True).decode()
@@ -967,8 +982,10 @@ def generate_legacy_grub_entry(remote, newversion):
     a kernel just via a command. This generates an entry in legacy
     grub for a new kernel version using the existing entry as a base.
     """
+    # grubconf = teuthology.get_file(remote,
+    #     '/boot/grub/grub.conf', sudo=True).decode()
     grubconf = teuthology.get_file(remote,
-        '/boot/grub/grub.conf', sudo=True).decode()
+        '/etc/zipl.conf', sudo=True).decode()
     titleline = ''
     rootline = ''
     kernelline = ''

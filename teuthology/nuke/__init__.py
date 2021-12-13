@@ -13,6 +13,7 @@ from teuthology.lock.ops import unlock_one
 from teuthology.lock.query import is_vm, list_locks, \
     find_stale_locks, get_status
 from teuthology.lock.util import locked_since_seconds
+"""
 from teuthology.nuke.actions import (
     check_console, clear_firewall, shutdown_daemons, remove_installed_packages,
     reboot, remove_osd_mounts, remove_osd_tmpfs, kill_hadoop,
@@ -21,6 +22,16 @@ from teuthology.nuke.actions import (
     remove_ceph_data, remove_testing_tree, remove_yum_timedhosts,
     kill_valgrind,
 )
+"""
+from teuthology.nuke.actions import (
+    check_console, clear_firewall, shutdown_daemons, remove_installed_packages,
+    reboot, remove_osd_mounts, remove_osd_tmpfs, kill_hadoop,
+    remove_ceph_packages, unlock_firmware_repo,
+    remove_configuration_files, undo_multipath, reset_syslog_dir,
+    remove_ceph_data, remove_testing_tree, remove_yum_timedhosts,
+    kill_valgrind,
+)
+
 from teuthology.config import config, FakeNamespace
 from teuthology.misc import (
     canonicalize_hostname, config_file, decanonicalize_hostname, merge_configs,

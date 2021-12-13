@@ -486,11 +486,14 @@ class GitbuilderProject(object):
         """
         Initializes the class from a teuthology job config
         """
+        # self.arch = self.job_config.get('arch', 'x86_64')
         self.arch = self.job_config.get('arch', 's390x')
-        self.os_type = self.job_config.get("os_type")
+        # self.os_type = self.job_config.get("os_type")
+        self.os_type = 'ubuntu'
         self.flavor = self.job_config.get("flavor")
         self.codename = self.job_config.get("codename")
-        self.os_version = self._get_version()
+        # self.os_version = self._get_version()
+        self.os_version = '20.04'
         # if os_version is given, prefer version/codename derived from it
         if self.os_version:
             self.os_version, self.codename = \
@@ -878,7 +881,8 @@ class ShamanProject(GitbuilderProject):
         req_obj = OrderedDict()
         req_obj['status'] = 'ready'
         req_obj['project'] = self.project
-        req_obj['flavor'] = flavor
+        # req_obj['flavor'] = flavor
+        req_obj['flavor'] = 'default'
         arch = "noarch" if self.force_noarch else self.arch
         req_obj['distros'] = '%s/%s' % (self.distro, arch)
         ref_name, ref_val = list(self._choose_reference().items())[0]

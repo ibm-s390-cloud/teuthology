@@ -398,7 +398,7 @@ def undo_multipath(ctx):
             timeout=60
         )
 
-
+"""
 def synch_clocks(remotes):
     log.info('Synchronizing clocks...')
     for remote in remotes:
@@ -423,7 +423,7 @@ def synch_clocks(remotes):
             ],
             timeout=60,
         )
-
+"""
 
 def unlock_firmware_repo(ctx):
     log.info('Making sure firmware.git is not locked...')
