@@ -488,12 +488,12 @@ class GitbuilderProject(object):
         """
         # self.arch = self.job_config.get('arch', 'x86_64')
         self.arch = self.job_config.get('arch', 's390x')
-        # self.os_type = self.job_config.get("os_type")
-        self.os_type = 'ubuntu'
+        self.os_type = self.job_config.get("os_type")
+        # self.os_type = 'ubuntu'
         self.flavor = self.job_config.get("flavor")
         self.codename = self.job_config.get("codename")
-        # self.os_version = self._get_version()
-        self.os_version = '20.04'
+        self.os_version = self._get_version()
+        # self.os_version = '20.04'
         # if os_version is given, prefer version/codename derived from it
         if self.os_version:
             self.os_version, self.codename = \

@@ -104,11 +104,11 @@ def lock_many(ctx, num, machine_type, user=None, description=None,
         reimage_types = teuthology.provision.get_reimage_types()
         if machine_type not in vm_types + reimage_types:
             if os_type:
-                #data['os_type'] = os_type
-                data['os_type'] = 'ubuntu'
+                data['os_type'] = os_type
+                # data['os_type'] = 'ubuntu'
             if os_version:
-                #data['os_version'] = os_version
-                data['os_version'] = '20.04'
+                data['os_version'] = os_version
+                # data['os_version'] = '20.04'
         if arch:
             data['arch'] = arch
         log.debug("lock_many request: %s", repr(data))
