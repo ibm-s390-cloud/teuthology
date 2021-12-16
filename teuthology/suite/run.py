@@ -151,6 +151,10 @@ class Run(object):
                 kernel_dict['kernel']['flavor'] = 'default'
         else:
             kernel_dict = dict()
+
+        log.info( "---------- kernel_dict = dict() ----------" )
+        kernel_dict = dict()
+
         return kernel_dict
 
     def choose_ceph_hash(self):
