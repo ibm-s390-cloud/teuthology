@@ -1247,9 +1247,9 @@ def task(ctx, config):
     validate_config(ctx, config)
     log.info('config %s, timeout %d' % (config, timeout))
 
-    with parallel() as p:
-        for role, role_config in config.items():
-            p.spawn(process_role, ctx, config, timeout, role, role_config)
+    # with parallel() as p:
+    #     for role, role_config in config.items():
+    #         p.spawn(process_role, ctx, config, timeout, role, role_config)
 
 
 def process_role(ctx, config, timeout, role, role_config):
