@@ -51,12 +51,19 @@ def kill_run(run_name, archive_base=None, owner=None, machine_type=None,
                 machine_type = run_info['machine_type']
                 owner = run_info['owner']
             else:
-                log.warn("The run info does not have machine type: %s" % run_info)
-                log.warn("Run archive used: %s" % run_archive_dir)
+                log.warning("The run info does not have machine type: %s" % run_info)
+                log.warning("Run archive used: %s" % run_archive_dir)
                 log.info("Using machine type '%s' and owner '%s'" % (machine_type, owner))
         elif machine_type is None:
-            raise RuntimeError("The run is still entirely enqueued; " +
-                               "you must also pass --machine-type")
+            # no jobs found in archive and no machine type specified,
+            # so we try paddles to see if there is anything scheduled
+            run_info = report.ResultsReporter().get_run(run_name)
+            machine_type = run_info.get('machine_type', None)
+            if machine_type:
+                log.info(f"Using machine type '{machine_type}' received from paddles.")
+            else:
+                raise RuntimeError(f"Cannot find machine type for the run {run_name}; " +
+                                    "you must also pass --machine-type")
 
     if not preserve_queue:
         remove_beanstalk_jobs(run_name, machine_type)

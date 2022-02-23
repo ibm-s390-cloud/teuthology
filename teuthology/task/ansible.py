@@ -17,7 +17,6 @@ from teuthology.task import Task
 
 log = logging.getLogger(__name__)
 
-
 class LoggerFile(object):
     """
     A thin wrapper around a logging.Logger instance that provides a file-like
@@ -112,9 +111,11 @@ class Ansible(Task):
 
     def __init__(self, ctx, config):
         super(Ansible, self).__init__(ctx, config)
-        self.log = log
         self.generated_inventory = False
         self.generated_playbook = False
+        self.log = logging.Logger(__name__)
+        self.log.addHandler(logging.FileHandler(
+            os.path.join(ctx.archive, "ansible.log")))
 
     def setup(self):
         super(Ansible, self).setup()
@@ -278,11 +279,10 @@ class Ansible(Task):
         command = ' '.join(args)
         log.debug("Running %s", command)
 
-        out_log = self.log.getChild('out')
         out, status = pexpect.run(
             command,
             cwd=self.repo_path,
-            logfile=_logfile or LoggerFile(out_log, logging.INFO),
+            logfile=_logfile or LoggerFile(self.log, logging.INFO),
             withexitstatus=True,
             timeout=None,
         )

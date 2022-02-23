@@ -187,6 +187,19 @@ class TestCluster(object):
         c_foo = c.exclude('foo', lambda role: role.startswith('b'))
         assert c_foo.remotes == {r2: ['bar'], r3: ['foo']}
 
+    def test_filter(self):
+        r1 = Mock(_name='r1')
+        r2 = Mock(_name='r2')
+        def func(r):
+            return r._name == "r1"
+        c = cluster.Cluster(remotes=[
+                (r1, ['foo']),
+                (r2, ['bar']),
+            ])
+        assert c.filter(func).remotes == {
+            r1: ['foo']
+        }
+
 
 class TestWriteFile(object):
     """ Tests for cluster.write_file """
@@ -198,22 +211,22 @@ class TestWriteFile(object):
             ],
         )
 
-    @patch("teuthology.misc.write_file")
+    @patch("teuthology.orchestra.remote.RemoteShell.write_file")
     def test_write_file(self, m_write_file):
         self.c.write_file("filename", "content")
-        m_write_file.assert_called_with(self.r1, "filename", "content")
+        m_write_file.assert_called_with("filename", "content")
 
-    @patch("teuthology.misc.write_file")
+    @patch("teuthology.orchestra.remote.RemoteShell.write_file")
     def test_fails_with_invalid_perms(self, m_write_file):
         with pytest.raises(ValueError):
             self.c.write_file("filename", "content", sudo=False, perms="invalid")
 
-    @patch("teuthology.misc.write_file")
+    @patch("teuthology.orchestra.remote.RemoteShell.write_file")
     def test_fails_with_invalid_owner(self, m_write_file):
         with pytest.raises(ValueError):
             self.c.write_file("filename", "content", sudo=False, owner="invalid")
 
-    @patch("teuthology.misc.sudo_write_file")
-    def test_with_sudo(self, m_sudo_write_file):
+    @patch("teuthology.orchestra.remote.RemoteShell.write_file")
+    def test_with_sudo(self, m_write_file):
         self.c.write_file("filename", "content", sudo=True)
-        m_sudo_write_file.assert_called_with(self.r1, "filename", "content", owner=None, perms=None)
+        m_write_file.assert_called_with("filename", "content", sudo=True, owner=None, mode=None)
