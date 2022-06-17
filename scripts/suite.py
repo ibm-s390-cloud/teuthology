@@ -60,7 +60,7 @@ Standard arguments:
                               the suite repo and contains non-empty string.
                               There is `teuthology_branch` present in one of
                               the user or system `teuthology.yaml` configuration
-                              files respectively, otherwise use `master`.
+                              files respectively, otherwise use `main`.
   -m <type>, --machine-type <type>
                               Machine type [default: {default_machine_type}]
   -d <distro>, --distro <distro>
@@ -175,6 +175,32 @@ Scheduler arguments:
  --job-threshold <threshold>  Do not allow to schedule the run if the number
                               of jobs exceeds <threshold>. Use 0 to allow
                               any number [default: {default_job_threshold}].
+ --no-nested-subset           Do not perform nested suite subsets.
+
++=================+=================================================================+
+| Priority        | Explanation                                                     |
++=================+=================================================================+
+| N < 10          | Use this if the sky is falling and some group of tests          |
+|                 | must be run ASAP.                                               |
++-----------------+-----------------------------------------------------------------+
+| 10 <= N < 50    | Use this if your tests are urgent and blocking other            |
+|                 | important development.                                          |
++-----------------+-----------------------------------------------------------------+
+| 50 <= N < 75    | Use this if you are testing a particular feature/fix            |
+|                 | and running fewer than about 25 jobs. This range is also        |
+|                 | used for urgent release testing.                                |
++-----------------+-----------------------------------------------------------------+
+| 75 <= N < 100   | Tech Leads regularly schedule integration tests with this       |
+|                 | priority to verify pull requests against main.                  |
++-----------------+-----------------------------------------------------------------+
+| 100 <= N < 150  | This priority is used for QE validation of point releases.      |
++-----------------+-----------------------------------------------------------------+
+| 150 <= N < 200  | Use this priority for 100 jobs or fewer that test a particular  |
+|                 | feature or fix. Results are available in about 24 hours.        |
++-----------------+-----------------------------------------------------------------+
+| 200 <= N < 1000 | Use this priority for large test runs. Results are available    |
+|                 | in about a week.                                                |
++-----------------+-----------------------------------------------------------------+
 
 """.format(
     default_machine_type=config.default_machine_type,
@@ -183,7 +209,7 @@ Scheduler arguments:
                             config.get_ceph_git_url()),
     default_suite_repo=defaults('--suite-repo',
                             config.get_ceph_qa_suite_git_url()),
-    default_ceph_branch=defaults('--ceph-branch', 'master'),
+    default_ceph_branch=defaults('--ceph-branch', 'main'),
     default_job_threshold=config.job_threshold,
 )
 

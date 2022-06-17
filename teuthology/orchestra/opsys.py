@@ -21,6 +21,7 @@ DISTRO_CODENAME_MAP = {
         "9": "stretch",
     },
     "rhel": {
+        "9": "plow",
         "8": "ootpa",
         "7": "maipo",
         "6": "santiago",
@@ -65,7 +66,7 @@ DEFAULT_OS_VERSION = dict(
     centos="8.stream",
     opensuse="15.0",
     sle="15.0",
-    rhel="8.4",
+    rhel="8.6",
     debian='8.0'
 )
 

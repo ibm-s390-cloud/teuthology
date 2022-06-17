@@ -10,10 +10,12 @@ from humanfriendly import format_timespan
 
 from datetime import datetime
 from tempfile import NamedTemporaryFile
+from teuthology import repo_utils
 
 from teuthology.config import config, JobConfig
 from teuthology.exceptions import (
-    BranchNotFoundError, CommitNotFoundError, VersionNotFoundError
+    BranchMismatchError, BranchNotFoundError, CommitNotFoundError,
+    VersionNotFoundError
 )
 from teuthology.misc import deep_merge, get_results_url
 from teuthology.orchestra.opsys import OS
@@ -174,7 +176,8 @@ class Run(object):
             log.info("ceph sha1 explicitly supplied")
 
         elif self.args.ceph_branch:
-            ceph_hash = util.git_ls_remote(repo_name, self.args.ceph_branch)
+            ceph_hash = util.git_ls_remote(
+                self.args.ceph_repo, self.args.ceph_branch)
             if not ceph_hash:
                 exc = BranchNotFoundError(
                     self.args.ceph_branch,
@@ -220,7 +223,7 @@ class Run(object):
         of the teuthology config files ``$HOME/teuthology.yaml``
         or ``/etc/teuthology.yaml`` correspondingly.
 
-        Use ``master``.
+        Use ``main``.
 
         Generate exception if the branch is not present in the repo.
 
@@ -244,13 +247,25 @@ class Run(object):
                         log.warning(
                             'The teuthology branch config is empty, skipping')
         if not teuthology_branch:
-            teuthology_branch = config.get('teuthology_branch', 'master')
+            teuthology_branch = config.get('teuthology_branch', 'main')
 
-        teuthology_sha1 = util.git_ls_remote(
-            'teuthology',
-            teuthology_branch,
-            'ibm-s390-cloud'
-        )
+        if config.teuthology_path is None:
+            teuthology_sha1 = util.git_ls_remote(
+                'teuthology',
+                teuthology_branch
+            )
+        else:
+            actual_branch = repo_utils.current_branch(config.teuthology_path)
+            if actual_branch != teuthology_branch:
+                raise BranchMismatchError(
+                    teuthology_branch,
+                    config.teuthology_path,
+                    "config.teuthology_path is set",
+                )
+            teuthology_sha1 = util.git_ls_remote(
+                f"file://{config.teuthology_path}",
+                teuthology_branch
+            )
         if not teuthology_sha1:
             exc = BranchNotFoundError(teuthology_branch, build_git_url('teuthology'))
             util.schedule_fail(message=str(exc), name=self.name)
@@ -280,7 +295,7 @@ class Run(object):
         suite_repo_project_or_url = self.args.suite_repo or 'ceph-qa-suite'
         suite_branch = self.args.suite_branch
         ceph_branch = self.args.ceph_branch
-        if suite_branch and suite_branch != 'master':
+        if suite_branch and suite_branch != 'main':
             if not util.git_branch_exists(
                 suite_repo_project_or_url,
                 suite_branch
@@ -293,12 +308,12 @@ class Run(object):
                 suite_branch = ceph_branch
             else:
                 log.info(
-                    "branch {0} not in {1}; will use master for"
+                    "branch {0} not in {1}; will use main for"
                     " ceph-qa-suite".format(
                         ceph_branch,
                         suite_repo_name
                     ))
-                suite_branch = 'master'
+                suite_branch = 'main'
         return suite_branch
 
     def choose_suite_hash(self, suite_branch):
@@ -356,6 +371,8 @@ class Run(object):
         if self.args.subset:
             subset = '/'.join(str(i) for i in self.args.subset)
             args.extend(['--subset', subset])
+        if self.args.no_nested_subset:
+            args.extend(['--no-nested-subset'])
         args.extend(['--seed', str(self.args.seed)])
         util.teuthology_schedule(
             args=args,
@@ -515,7 +532,7 @@ class Run(object):
 Use the following testing priority
 10 to 49: Tests which are urgent and blocking other important development.
 50 to 74: Testing a particular feature/fix with less than 25 jobs and can also be used for urgent release testing.
-75 to 99: Tech Leads usually schedule integration tests with this priority to verify pull requests against master.
+75 to 99: Tech Leads usually schedule integration tests with this priority to verify pull requests against main.
 100 to 149: QE validation of point releases.
 150 to 199: Testing a particular feature/fix with less than 100 jobs and results will be available in a day or so.
 200 to 1000: Large test runs that can be done over the course of a week.
@@ -556,8 +573,11 @@ Note: If you still want to go ahead, use --job-threshold 0'''
             self.base_config.suite.replace(':', '/'),
         ))
         log.debug('Suite %s in %s' % (suite_name, suite_path))
+        log.debug(f"subset = {self.args.subset}")
+        log.debug(f"no_nested_subset = {self.args.no_nested_subset}")
         configs = build_matrix(suite_path,
                                subset=self.args.subset,
+                               no_nested_subset=self.args.no_nested_subset,
                                seed=self.args.seed)
         log.info('Suite %s in %s generated %d jobs (not yet filtered)' % (
             suite_name, suite_path, len(configs)))

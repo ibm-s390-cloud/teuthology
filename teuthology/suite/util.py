@@ -36,7 +36,7 @@ def fetch_repos(branch, test_name):
 
     The reason the teuthology repo is also fetched is that currently we use
     subprocess to call teuthology-schedule to schedule jobs so we need to make
-    sure it is up-to-date. For that reason we always fetch the master branch
+    sure it is up-to-date. For that reason we always fetch the main branch
     for test scheduling, regardless of what teuthology branch is requested for
     testing.
 
@@ -46,9 +46,9 @@ def fetch_repos(branch, test_name):
         # When a user is scheduling a test run from their own copy of
         # teuthology, let's not wreak havoc on it.
         if config.automated_scheduling:
-            # We use teuthology's master branch in all cases right now
+            # We use teuthology's main branch in all cases right now
             if config.teuthology_path is None:
-                fetch_teuthology('master')
+                fetch_teuthology('main')
         suite_repo_path = fetch_qa_suite(branch)
     except BranchNotFoundError as exc:
         schedule_fail(message=str(exc), name=test_name)
@@ -100,7 +100,7 @@ def get_gitbuilder_hash(project=None, branch=None, flavor=None,
     # Alternate method for github-hosted projects - left here for informational
     # purposes
     # resp = requests.get(
-    #     'https://api.github.com/repos/ceph/ceph/git/refs/heads/master')
+    #     'https://api.github.com/repos/ceph/ceph/git/refs/heads/main')
     # hash = .json()['object']['sha']
     (arch, release, _os) = get_distro_defaults(distro, machine_type)
     if distro is None:
@@ -189,7 +189,7 @@ def git_ls_remote(project_or_url, branch, project_owner='ceph'):
                            name is passed; not when a URL is passed
     :returns: The sha1 if found; else None
     """
-    if '://' in project_or_url:
+    if '://' in project_or_url or project_or_url.startswith('git@'):
         url = project_or_url
     else:
         url = build_git_url(project_or_url, project_owner)

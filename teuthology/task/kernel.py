@@ -32,7 +32,7 @@ from teuthology.task.install.deb import install_dep_packages
 
 log = logging.getLogger(__name__)
 
-CONFIG_DEFAULT = {'branch': 'master'}
+CONFIG_DEFAULT = {'branch': 'main'}
 TIMEOUT_DEFAULT = 300
 
 VERSION_KEYS = ['branch', 'tag', 'sha1', 'deb', 'rpm', 'koji', 'koji_task']
@@ -1153,7 +1153,7 @@ def task(ctx, config):
     This can be a branch, tag, or sha1 of ceph-client.git or a local
     kernel package.
 
-    To install ceph-client.git branch (default: master)::
+    To install ceph-client.git branch (default: main)::
 
         kernel:
           branch: testing
@@ -1222,7 +1222,7 @@ def task(ctx, config):
           client.1:
             branch: more_specific
           osd.3:
-            branch: master
+            branch: main
 
     To wait 3 minutes for hosts to reboot (default: 300)::
 
@@ -1259,6 +1259,9 @@ def process_role(ctx, config, timeout, role, role_config):
     # gather information about this remote
     (role_remote,) = ctx.cluster.only(role).remotes.keys()
     system_type = role_remote.os.name
+    if role_remote.is_container:
+        log.info(f"Remote f{role_remote.shortname} is a container; skipping kernel installation")
+        return
     if role_config.get('rpm') or role_config.get('deb'):
         # We only care about path - deb: vs rpm: is meaningless,
         # rpm: just happens to be parsed first.  Nothing is stopping

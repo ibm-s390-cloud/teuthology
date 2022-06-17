@@ -79,8 +79,8 @@ def main(ctx):
     result_proc = None
 
     if teuth_config.teuthology_path is None:
-        fetch_teuthology('master')
-    fetch_qa_suite('master')
+        fetch_teuthology('main')
+    fetch_qa_suite('main')
 
     keep_running = True
     while keep_running:
@@ -144,9 +144,9 @@ def prep_job(job_config, log_file_path, archive_dir):
         archive_dir, safe_archive, str(job_id))
     job_config['archive_path'] = archive_path_full
 
-    # If the teuthology branch was not specified, default to master and
+    # If the teuthology branch was not specified, default to main and
     # store that value.
-    teuthology_branch = job_config.get('teuthology_branch', 'master')
+    teuthology_branch = job_config.get('teuthology_branch', 'main')
     job_config['teuthology_branch'] = teuthology_branch
     teuthology_sha1 = job_config.get('teuthology_sha1')
     if not teuthology_sha1:
@@ -160,7 +160,8 @@ def prep_job(job_config, log_file_path, archive_dir):
                 dict(status='dead', failure_reason=reason)
             )
             raise SkipJob()
-        log.info('Using teuthology sha1 %s', teuthology_sha1)
+        if teuth_config.teuthology_path is None:
+            log.info('Using teuthology sha1 %s', teuthology_sha1)
 
     try:
         if teuth_config.teuthology_path is not None:
@@ -169,9 +170,9 @@ def prep_job(job_config, log_file_path, archive_dir):
             teuth_path = fetch_teuthology(branch=teuthology_branch,
                                           commit=teuthology_sha1)
         # For the teuthology tasks, we look for suite_branch, and if we
-        # don't get that, we look for branch, and fall back to 'master'.
+        # don't get that, we look for branch, and fall back to 'main'.
         # last-in-suite jobs don't have suite_branch or branch set.
-        ceph_branch = job_config.get('branch', 'master')
+        ceph_branch = job_config.get('branch', 'main')
         suite_branch = job_config.get('suite_branch', ceph_branch)
         suite_sha1 = job_config.get('suite_sha1')
         suite_repo = job_config.get('suite_repo')
@@ -225,6 +226,8 @@ def run_job(job_config, teuth_bin_path, archive_dir, verbose):
                 args.extend(['--seed', job_config['seed']])
             if job_config.get('subset'):
                 args.extend(['--subset', job_config['subset']])
+            if job_config.get('no_nested_subset'):
+                args.extend(['--no-nested-subset'])
         else:
             log.info('Generating results for %s', job_config['name'])
             timeout = job_config.get('results_timeout',

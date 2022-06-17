@@ -24,7 +24,7 @@ class SELinux(Task):
     fail for other denials one can add the overrides with appropriate escapes
     overrides:
        selinux:
-         whitelist:
+         allowlist:
          - 'name="cephtest"'
          - 'dmidecode'
          - 'comm="logrotate"'
@@ -52,6 +52,9 @@ class SELinux(Task):
         for (remote, roles) in self.cluster.remotes.items():
             if remote.is_vm:
                 msg = "Excluding {host}: VMs are not yet supported"
+                log.info(msg.format(host=remote.shortname))
+            elif remote.is_container:
+                msg = "Excluding {host}: containers are not yet supported"
                 log.info(msg.format(host=remote.shortname))
             elif remote.os.name in ['opensuse', 'sle']:
                 msg = "Excluding {host}: \
@@ -133,10 +136,11 @@ class SELinux(Task):
             'comm="ksmtuned"',
             'comm="sssd"',
             'comm="sss_cache"',
+            'context=system_u:system_r:NetworkManager_dispatcher_t:s0',
         ]
-        se_whitelist = self.config.get('whitelist', [])
-        if se_whitelist:
-            known_denials.extend(se_whitelist)
+        se_allowlist = self.config.get('allowlist', [])
+        if se_allowlist:
+            known_denials.extend(se_allowlist)
         ignore_known_denials = '\'\(' + str.join('\|', known_denials) + '\)\''
         for remote in self.cluster.remotes.keys():
             proc = remote.run(

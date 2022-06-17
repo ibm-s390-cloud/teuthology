@@ -70,6 +70,27 @@ def ls_remote(url, ref):
     return sha1
 
 
+def current_branch(path: str) -> str:
+    """
+    Return the current branch for a given on-disk repository.
+
+    :returns: the current branch, or an empty string if none is found.
+    """
+    # git branch --show-current was added in 2.22.0, and we can't assume
+    # our version is new enough.
+    cmd = "git rev-parse --abbrev-ref HEAD"
+    result = subprocess.Popen(
+        cmd,
+        shell=True,
+        cwd=path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        ).communicate()[0].strip().decode()
+    if result == "HEAD":
+        return ""
+    return result
+
+
 def enforce_repo_state(repo_url, dest_path, branch, commit=None, remove_on_error=True):
     """
     Use git to either clone or update a given repo, forcing it to switch to the
@@ -142,8 +163,9 @@ def clone_repo(repo_url, dest_path, branch, shallow=True):
     result = proc.wait()
     # Newer git versions will bail if the branch is not found, but older ones
     # will not. Fortunately they both output similar text.
-    if not_found_str in out:
+    if result != 0:
         log.error(out)
+    if not_found_str in out:
         if result == 0:
             # Old git left a repo with the wrong branch. Remove it.
             shutil.rmtree(dest_path, ignore_errors=True)
@@ -425,12 +447,13 @@ def bootstrap_teuthology(dest_path):
         cmd = './bootstrap'
         boot_proc = subprocess.Popen(cmd, shell=True, cwd=dest_path, env=env,
                                      stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT)
+                                     stderr=subprocess.STDOUT,
+                                     universal_newlines=True)
         out, err = boot_proc.communicate()
         returncode = boot_proc.wait()
         log.info("Bootstrap exited with status %s", returncode)
         if returncode != 0:
-            for line in out.split():
+            for line in out.split("\n"):
                 log.warning(line.strip())
             venv_path = os.path.join(dest_path, 'virtualenv')
             log.info("Removing %s", venv_path)

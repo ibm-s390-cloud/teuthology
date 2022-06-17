@@ -505,7 +505,8 @@ class Remote(RemoteShell):
         if not self.ssh or \
            not self.ssh.get_transport() or \
            not self.ssh.get_transport().is_active():
-            self.reconnect()
+            if not self.reconnect():
+                raise Exception(f'Cannot connect to remote host {self.shortname}')
         r = self._runner(client=self.ssh, name=self.shortname, **kwargs)
         r.remote = self
         return r
@@ -678,6 +679,15 @@ class Remote(RemoteShell):
         if not hasattr(self, '_is_vm'):
             self._is_vm = teuthology.lock.query.is_vm(self.name)
         return self._is_vm
+
+    @property
+    def is_container(self):
+        if not hasattr(self, '_is_container'):
+            self._is_container = not bool(self.run(
+                args="test -f /run/.containerenv -o -f /.dockerenv",
+                check_status=False,
+            ).returncode)
+        return self._is_container
 
     @property
     def init_system(self):

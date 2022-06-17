@@ -19,7 +19,7 @@ services:
     ports:
       - 5432:5432
   paddles:
-    build: ./paddles
+    image: quay.io/ceph-infra/paddles
     environment: 
       PADDLES_SERVER_HOST: 0.0.0.0
       PADDLES_SQLALCHEMY_URL: postgresql+psycopg2://admin:password@postgres:5432/paddles
@@ -31,7 +31,7 @@ services:
     healthcheck:
         test: ["CMD", "curl", "-f", "http://0.0.0.0:8080"]
         timeout: 5s
-        interval: 10s
+        interval: 30s
         retries: 2
     ports: 
         - 8080:8080
@@ -53,16 +53,40 @@ services:
         - 8081:8081
   beanstalk:
         build: ../../beanstalk/alpine
-        depends_on:
-            pulpito:
-                condition: service_healthy
         ports:
             - "11300:11300"
   teuthology:
-    build: ./teuthology
+    build:
+      context: ../../
+      dockerfile: ./docs/docker-compose/teuthology/Dockerfile
+      args:
+        SSH_PRIVKEY_FILE: $SSH_PRIVKEY_FILE
     depends_on:
-        pulpito:
+        paddles:
             condition: service_healthy
     links:
         - paddles
         - beanstalk
+    environment:
+      SSH_PRIVKEY:
+      SSH_PRIVKEY_FILE:
+      MACHINE_TYPE:
+      TESTNODES:
+      TEUTHOLOGY_WAIT:
+      TEUTH_BRANCH:
+  testnode:
+    build:
+      context: ./testnode
+      dockerfile: ./Dockerfile
+    deploy:
+      replicas: 3
+    depends_on:
+        paddles:
+            condition: service_healthy
+    links:
+      - paddles
+    ports:
+      - "22"
+    environment:
+      SSH_PUBKEY:
+    platform: linux/amd64

@@ -250,21 +250,21 @@ def nuke(ctx, should_unlock, sync_clocks=True, noipmi=False, keep_logs=False, sh
     if 'targets' not in ctx.config:
         return
     total_unnuked = {}
-    targets = dict(ctx.config['targets'])
-    if ctx.name:
-        log.info('Checking targets against current locks')
-        locks = list_locks()
-        # Remove targets who's description doesn't match archive name.
-        for lock in locks:
-            for target in targets:
-                if target == lock['name']:
-                    if ctx.name not in lock['description']:
-                        del ctx.config['targets'][lock['name']]
-                        log.info(
-                            "Not nuking %s because description doesn't match",
-                            lock['name'])
+    log.info('Checking targets against current locks')
     with parallel() as p:
         for target, hostkey in ctx.config['targets'].items():
+            status = get_status(target)
+            if ctx.name and ctx.name not in status['description']:
+                total_unnuked[target] = hostkey
+                log.info(
+                    f"Not nuking {target} because description doesn't match: "
+                    f"{ctx.name} != {status['description']}"
+                )
+                continue
+            elif status.get('up') is False:
+                total_unnuked[target] = hostkey
+                log.info(f"Not nuking {target} because it is down")
+                continue
             p.spawn(
                 nuke_one,
                 ctx,
@@ -320,19 +320,24 @@ def nuke_helper(ctx, should_unlock, keep_logs, should_reboot):
         if is_vm(shortname):
             return
     log.debug('shortname: %s' % shortname)
+    remote = Remote(host)
     if ctx.check_locks:
         # does not check to ensure if the node is 'up'
         # we want to be able to nuke a downed node
         check_lock.check_lock(ctx, None, check_up=False)
     status = get_status(host)
     if status['machine_type'] in provision.fog.get_types():
-        remote = Remote(host)
         remote.console.power_off()
         return
     elif status['machine_type'] in provision.pelagos.get_types():
         provision.pelagos.park_node(host)
         return
-
+    elif remote.is_container:
+        remote.run(
+            args=['sudo', '/testnode_stop.sh'],
+            check_status=False,
+        )
+        return
     if (not ctx.noipmi and 'ipmi_user' in config and
             'vpm' not in shortname):
         try:
