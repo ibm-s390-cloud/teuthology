@@ -15,8 +15,10 @@ import time
 import yaml
 import json
 import re
+from sys import stdin
 import pprint
 import datetime
+from types import MappingProxyType
 
 from tarfile import ReadError
 
@@ -126,11 +128,14 @@ def merge_configs(config_paths):
     """
     conf_dict = dict()
     for conf_path in config_paths:
-        if not os.path.exists(conf_path):
+        if conf_path == "-":
+            partial_dict = yaml.safe_load(stdin)
+        elif not os.path.exists(conf_path):
             log.debug("The config path {0} does not exist, skipping.".format(conf_path))
             continue
-        with open(conf_path) as partial_file:
-            partial_dict = yaml.safe_load(partial_file)
+        else:
+            with open(conf_path) as partial_file:
+                partial_dict = yaml.safe_load(partial_file)
         try:
             conf_dict = deep_merge(conf_dict, partial_dict)
         except Exception:
@@ -803,27 +808,25 @@ def get_scratch_devices(remote):
 
     retval = []
     for dev in devs:
-        try:
-            # FIXME: Split this into multiple calls.
-            remote.run(
-                args=[
-                    # node exists
-                    'stat',
-                    dev,
-                    run.Raw('&&'),
-                    # readable
-                    'sudo', 'dd', 'if=%s' % dev, 'of=/dev/null', 'count=1',
-                    run.Raw('&&'),
-                    # not mounted
-                    run.Raw('!'),
-                    'mount',
-                    run.Raw('|'),
-                    'grep', '-q', dev,
-                ]
-            )
+        dev_checks = [
+            [['stat', dev], "does not exist"],
+            [['sudo', 'dd', 'if=%s' % dev, 'of=/dev/null', 'count=1'], "is not readable"],
+            [
+                [run.Raw('!'), 'mount', run.Raw('|'), 'grep', '-v', 'devtmpfs', run.Raw('|'),
+                'grep', '-q', dev],
+                "is in use"
+            ],
+        ]
+        for args, msg in dev_checks:
+            try:
+                remote.run(args=args)
+            except CommandFailedError:
+                log.debug(f"get_scratch_devices: {dev} {msg}")
+                break
+        else:
             retval.append(dev)
-        except CommandFailedError:
-            log.debug("get_scratch_devices: %s is in use" % dev)
+            continue
+        break
     return retval
 
 
@@ -1003,23 +1006,81 @@ def deep_merge(a, b):
     :param a: object items will be merged into
     :param b: object items will be merged from
     """
-    if a is None:
-        return b
     if b is None:
         return a
-    if isinstance(a, list):
+    elif isinstance(a, list):
         assert isinstance(b, list)
         a.extend(b)
         return a
-    if isinstance(a, dict):
-        assert isinstance(b, dict)
+    elif isinstance(a, dict):
+        assert isinstance(b, dict) or isinstance(b, MappingProxyType)
         for (k, v) in b.items():
-            if k in a:
-                a[k] = deep_merge(a[k], v)
-            else:
-                a[k] = v
+            a[k] = deep_merge(a.get(k), v)
         return a
-    return b
+    elif isinstance(b, dict) or isinstance(b, list):
+        return deep_merge(b.__class__(), b)
+    elif isinstance(b, MappingProxyType):
+        return deep_merge(dict(), b)
+    else:
+        return b
+
+
+def get_valgrind_args(testdir, name, preamble, v, exit_on_first_error=True):
+    """
+    Build a command line for running valgrind.
+
+    testdir - test results directory
+    name - name of daemon (for naming hte log file)
+    preamble - stuff we should run before valgrind
+    v - valgrind arguments
+    """
+    if v is None:
+        return preamble
+    if not isinstance(v, list):
+        v = [v]
+
+    # https://tracker.ceph.com/issues/44362
+    preamble.extend([
+        'env', 'OPENSSL_ia32cap=~0x1000000000000000',
+    ])
+
+    val_path = '/var/log/ceph/valgrind'
+    if '--tool=memcheck' in v or '--tool=helgrind' in v:
+        extra_args = [
+            'valgrind',
+            '--trace-children=no',
+            '--child-silent-after-fork=yes',
+            '--soname-synonyms=somalloc=*tcmalloc*',
+            '--num-callers=50',
+            '--suppressions={tdir}/valgrind.supp'.format(tdir=testdir),
+            '--xml=yes',
+            '--xml-file={vdir}/{n}.log'.format(vdir=val_path, n=name),
+            '--time-stamp=yes',
+            '--vgdb=yes',
+        ]
+    else:
+        extra_args = [
+            'valgrind',
+            '--trace-children=no',
+            '--child-silent-after-fork=yes',
+            '--soname-synonyms=somalloc=*tcmalloc*',
+            '--suppressions={tdir}/valgrind.supp'.format(tdir=testdir),
+            '--log-file={vdir}/{n}.log'.format(vdir=val_path, n=name),
+            '--time-stamp=yes',
+            '--vgdb=yes',
+        ]
+    if exit_on_first_error:
+        extra_args.extend([
+            # at least Valgrind 3.14 is required
+            '--exit-on-first-error=yes',
+            '--error-exitcode=42',
+        ])
+    args = [
+        'cd', testdir,
+        run.Raw('&&'),
+    ] + preamble + extra_args + v
+    log.debug('running %s under valgrind with args %s', name, args)
+    return args
 
 
 def ssh_keyscan(hostnames, _raise=True):
@@ -1064,7 +1125,7 @@ def _ssh_keyscan(hostname):
     :param hostname: The hostname
     :returns: The host key
     """
-    args = ['ssh-keyscan', '-T', '1', '-t', 'rsa', hostname]
+    args = ['ssh-keyscan', '-T', '1', hostname]
     p = subprocess.Popen(
         args=args,
         stdout=subprocess.PIPE,

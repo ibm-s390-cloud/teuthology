@@ -2,9 +2,9 @@ import copy
 import logging
 import os
 import pwd
+import yaml
 import re
 import time
-import yaml
 
 from humanfriendly import format_timespan
 
@@ -22,6 +22,7 @@ from teuthology.orchestra.opsys import OS
 from teuthology.repo_utils import build_git_url
 
 from teuthology.suite import util
+from teuthology.suite.merge import config_merge
 from teuthology.suite.build_matrix import build_matrix
 from teuthology.suite.placeholder import substitute_placeholders, dict_templ
 
@@ -100,7 +101,7 @@ class Run(object):
             self.suite_repo_path = self.args.suite_dir
         else:
             self.suite_repo_path = util.fetch_repos(
-                suite_branch, test_name=self.name)
+                suite_branch, test_name=self.name, dry_run=self.args.dry_run)
         teuthology_branch, teuthology_sha1 = self.choose_teuthology_branch()
 
 
@@ -144,7 +145,8 @@ class Run(object):
             if not kernel_hash:
                 util.schedule_fail(
                     "Kernel branch '{branch}' not found".format(
-                     branch=self.args.kernel_branch)
+                     branch=self.args.kernel_branch),
+                     dry_run=self.args.dry_run,
                 )
         if kernel_hash:
             log.info("kernel sha1: {hash}".format(hash=kernel_hash))
@@ -172,7 +174,7 @@ class Run(object):
                     self.args.ceph_sha1,
                     '%s.git' % repo_name
                 )
-                util.schedule_fail(message=str(exc), name=self.name)
+                util.schedule_fail(message=str(exc), name=self.name, dry_run=self.args.dry_run)
             log.info("ceph sha1 explicitly supplied")
 
         elif self.args.ceph_branch:
@@ -183,7 +185,7 @@ class Run(object):
                     self.args.ceph_branch,
                     '%s.git' % repo_name
                 )
-                util.schedule_fail(message=str(exc), name=self.name)
+                util.schedule_fail(message=str(exc), name=self.name, dry_run=self.args.dry_run)
 
         log.info("ceph sha1: {hash}".format(hash=ceph_hash))
         return ceph_hash
@@ -198,7 +200,7 @@ class Run(object):
                     self.args.distro_version, self.args.machine_type,
                 )
             except Exception as exc:
-                util.schedule_fail(str(exc), self.name)
+                util.schedule_fail(str(exc), self.name, dry_run=self.args.dry_run)
             log.info("ceph version: {ver}".format(ver=ceph_version))
             return ceph_version
         else:
@@ -247,28 +249,32 @@ class Run(object):
                         log.warning(
                             'The teuthology branch config is empty, skipping')
         if not teuthology_branch:
-            teuthology_branch = config.get('teuthology_branch', 'main')
+            teuthology_branch = config.get('teuthology_branch')
 
-        if config.teuthology_path is None:
-            teuthology_sha1 = util.git_ls_remote(
-                'teuthology',
-                teuthology_branch
-            )
-        else:
+        if config.teuthology_path:
             actual_branch = repo_utils.current_branch(config.teuthology_path)
-            if actual_branch != teuthology_branch:
+            if teuthology_branch and actual_branch != teuthology_branch:
                 raise BranchMismatchError(
                     teuthology_branch,
                     config.teuthology_path,
                     "config.teuthology_path is set",
                 )
+            if not teuthology_branch:
+                teuthology_branch = actual_branch
             teuthology_sha1 = util.git_ls_remote(
                 f"file://{config.teuthology_path}",
                 teuthology_branch
             )
+        else:
+            if not teuthology_branch:
+                teuthology_branch = 'main'
+            teuthology_sha1 = util.git_ls_remote(
+                'teuthology',
+                teuthology_branch
+            )
         if not teuthology_sha1:
             exc = BranchNotFoundError(teuthology_branch, build_git_url('teuthology'))
-            util.schedule_fail(message=str(exc), name=self.name)
+            util.schedule_fail(message=str(exc), name=self.name, dry_run=self.args.dry_run)
         log.info("teuthology branch: %s %s", teuthology_branch, teuthology_sha1)
         return teuthology_branch, teuthology_sha1
 
@@ -301,7 +307,7 @@ class Run(object):
                 suite_branch
             ):
                 exc = BranchNotFoundError(suite_branch, suite_repo_name)
-                util.schedule_fail(message=str(exc), name=self.name)
+                util.schedule_fail(message=str(exc), name=self.name, dry_run=self.args.dry_run)
         elif not suite_branch:
             # Decide what branch of the suite repo to use
             if util.git_branch_exists(suite_repo_project_or_url, ceph_branch):
@@ -325,7 +331,7 @@ class Run(object):
         )
         if not suite_hash:
             exc = BranchNotFoundError(suite_branch, suite_repo_name)
-            util.schedule_fail(message=str(exc), name=self.name)
+            util.schedule_fail(message=str(exc), name=self.name, dry_run=self.args.dry_run)
         log.info("%s branch: %s %s", suite_repo_name, suite_branch, suite_hash)
         return suite_hash
 
@@ -421,16 +427,13 @@ class Run(object):
     def collect_jobs(self, arch, configs, newest=False, limit=0):
         jobs_to_schedule = []
         jobs_missing_packages = []
-        for description, fragment_paths in configs:
+        for description, fragment_paths, parsed_yaml in configs:
             if limit > 0 and len(jobs_to_schedule) >= limit:
                 log.info(
                     'Stopped after {limit} jobs due to --limit={limit}'.format(
                         limit=limit))
                 break
 
-            raw_yaml = '\n'.join([open(a, 'r').read() for a in fragment_paths])
-
-            parsed_yaml = yaml.safe_load(raw_yaml)
             os_type = parsed_yaml.get('os_type') or self.base_config.os_type
             os_version = parsed_yaml.get('os_version') or self.base_config.os_version
             exclude_arch = parsed_yaml.get('exclude_arch')
@@ -452,13 +455,16 @@ class Run(object):
                 '--',
             ])
             arg.extend(self.base_yaml_paths)
-            arg.extend(fragment_paths)
+
+            parsed_yaml_txt = yaml.dump(parsed_yaml)
+            arg.append('-')
 
             job = dict(
                 yaml=parsed_yaml,
                 desc=description,
                 sha1=self.base_config.sha1,
-                args=arg
+                args=arg,
+                stdin=parsed_yaml_txt,
             )
 
             sha1 = self.base_config.sha1
@@ -513,12 +519,14 @@ class Run(object):
                         "At least one job needs packages that don't exist for "
                         "hash {sha1}.".format(sha1=self.base_config.sha1),
                         name,
+                        dry_run=self.args.dry_run,
                     )
             util.teuthology_schedule(
                 args=job['args'],
                 dry_run=self.args.dry_run,
                 verbose=self.args.verbose,
                 log_prefix=log_prefix,
+                stdin=job['stdin'],
             )
             throttle = self.args.throttle
             if not self.args.dry_run and throttle:
@@ -538,11 +546,11 @@ Use the following testing priority
 200 to 1000: Large test runs that can be done over the course of a week.
 Note: To force run, use --force-priority'''
         if priority < 50:
-            util.schedule_fail(msg)
+            util.schedule_fail(msg, dry_run=self.args.dry_run)
         elif priority < 75 and jobs_to_schedule > 25:
-            util.schedule_fail(msg)
+            util.schedule_fail(msg, dry_run=self.args.dry_run)
         elif priority < 150 and jobs_to_schedule > 100:
-            util.schedule_fail(msg)
+            util.schedule_fail(msg, dry_run=self.args.dry_run)
 
     def check_num_jobs(self, jobs_to_schedule):
         """
@@ -553,7 +561,7 @@ Note: To force run, use --force-priority'''
 
 Note: If you still want to go ahead, use --job-threshold 0'''
         if threshold and jobs_to_schedule > threshold:
-            util.schedule_fail(msg)
+            util.schedule_fail(msg, dry_run=self.args.dry_run)
 
     def schedule_suite(self):
         """
@@ -579,8 +587,14 @@ Note: If you still want to go ahead, use --job-threshold 0'''
                                subset=self.args.subset,
                                no_nested_subset=self.args.no_nested_subset,
                                seed=self.args.seed)
-        log.info('Suite %s in %s generated %d jobs (not yet filtered)' % (
-            suite_name, suite_path, len(configs)))
+        generated = len(configs)
+        log.info(f'Suite {suite_name} in {suite_path} generated {generated} jobs (not yet filtered or merged)')
+        configs = list(config_merge(configs,
+            filter_in=self.args.filter_in,
+            filter_out=self.args.filter_out,
+            filter_all=self.args.filter_all,
+            filter_fragments=self.args.filter_fragments,
+            suite_name=suite_name))
 
         if self.args.dry_run:
             log.debug("Base job config:\n%s" % self.base_config)
@@ -617,7 +631,7 @@ Note: If you still want to go ahead, use --job-threshold 0'''
                     'this run for {that_long}? (y/N):'
                     .format(
                         that_long=format_timespan(sleep_before_teardown),
-                        total=len(configs),
+                        total=generated,
                         maximum=job_limit))
                 while True:
                     insane=(input(are_you_insane) or 'n').lower()
@@ -632,19 +646,12 @@ Note: If you still want to go ahead, use --job-threshold 0'''
         limit = self.args.newest
         while backtrack <= limit:
             jobs_missing_packages, jobs_to_schedule = \
-                self.collect_jobs(arch,
-                    util.filter_configs(configs,
-                        filter_in=self.args.filter_in,
-                        filter_out=self.args.filter_out,
-                        filter_all=self.args.filter_all,
-                        filter_fragments=self.args.filter_fragments,
-                        suite_name=suite_name),
-                                  self.args.newest, job_limit)
+                self.collect_jobs(arch, configs, self.args.newest, job_limit)
             if jobs_missing_packages and self.args.newest:
                 new_sha1 = \
                     util.find_git_parent('ceph', self.base_config.sha1)
                 if new_sha1 is None:
-                    util.schedule_fail('Backtrack for --newest failed', name)
+                    util.schedule_fail('Backtrack for --newest failed', name, dry_run=self.args.dry_run)
                  # rebuild the base config to resubstitute sha1
                 self.config_input['ceph_hash'] = new_sha1
                 self.base_config = self.build_base_config()
@@ -659,6 +666,7 @@ Note: If you still want to go ahead, use --job-threshold 0'''
                 util.schedule_fail(
                     'Exceeded %d backtracks; raise --newest value' % limit,
                     name,
+                    dry_run=self.args.dry_run,
                 )
 
         if self.args.dry_run:
@@ -682,14 +690,18 @@ Note: If you still want to go ahead, use --job-threshold 0'''
 
         count = len(jobs_to_schedule)
         missing_count = len(jobs_missing_packages)
+        total_count = count
+        if self.args.num:
+            total_count *= self.args.num
         log.info(
             'Suite %s in %s scheduled %d jobs.' %
             (suite_name, suite_path, count)
         )
         log.info('%d/%d jobs were filtered out.',
-                 (len(configs) - count),
-                 len(configs))
+                 (generated - count),
+                 generated)
         if missing_count:
             log.warning('Scheduled %d/%d jobs that are missing packages!',
                      missing_count, count)
+        log.info('Scheduled %d jobs in total.', total_count)
         return count

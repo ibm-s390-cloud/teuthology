@@ -2,6 +2,7 @@ import re
 
 DISTRO_CODENAME_MAP = {
     "ubuntu": {
+        "22.04": "jammy",
         "20.04": "focal",
         "18.04": "bionic",
         "17.10": "artful",
@@ -61,7 +62,7 @@ DISTRO_CODENAME_MAP = {
 }
 
 DEFAULT_OS_VERSION = dict(
-    ubuntu="20.04",
+    ubuntu="22.04",
     fedora="25",
     centos="8.stream",
     opensuse="15.0",
