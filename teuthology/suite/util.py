@@ -134,7 +134,7 @@ def get_distro_defaults(distro, machine_type):
     arch = 's390x'
     if distro in (None, 'None'):
         os_type = 'ubuntu'
-        os_version = '22.04'
+        os_version = '23.04'
         machine_type == 'm1306'
     # elif distro in ('rhel', 'centos'):
     #     os_type = 'centos'
@@ -142,7 +142,7 @@ def get_distro_defaults(distro, machine_type):
     elif distro == 'ubuntu':
         os_type = distro
         if machine_type == 'm1306':
-            os_version = '22.04'
+            os_version = '23.04'
             arch = 's390x'
         else:
             os_version = '16.04'
@@ -287,7 +287,7 @@ def package_version_for_hash(hash, flavor='default', distro='rhel',
 '''
 
 def package_version_for_hash(hash, flavor='basic', distro='ubuntu',
-                             distro_version='20.04', machine_type='m1306'):
+                             distro_version='23.04', machine_type='m1306'):
     """
     Does what it says on the tin. Uses gitbuilder repos.
 
