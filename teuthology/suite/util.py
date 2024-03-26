@@ -287,7 +287,7 @@ def package_version_for_hash(hash, flavor='default', distro='rhel',
 '''
 
 def package_version_for_hash(hash, flavor='basic', distro='ubuntu',
-                             distro_version='23.04', machine_type='m1306'):
+                             distro_version='23.10', machine_type='m1306'):
     """
     Does what it says on the tin. Uses gitbuilder repos.
 
