@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 import pexpect
@@ -5,6 +6,8 @@ import psutil
 import subprocess
 import sys
 import time
+
+from typing import Union, Literal, Optional
 
 import teuthology.lock.query
 import teuthology.lock.util
@@ -19,6 +22,7 @@ except ImportError:
     libvirt = None
 
 log = logging.getLogger(__name__)
+PowerOnOffState = Union[Literal["on"], Literal["off"]]
 
 
 class RemoteConsole():
@@ -35,11 +39,11 @@ class PhysicalConsole(RemoteConsole):
     Physical Console (set from getRemoteConsole)
     """
     def __init__(self, name, ipmiuser=None, ipmipass=None, ipmidomain=None,
-                 logfile=None, timeout=40):
+                 timeout=120):
         self.name = name
         self.shortname = self.getShortName(name)
+        self.log = log.getChild(self.shortname)
         self.timeout = timeout
-        self.logfile = None
         self.ipmiuser = ipmiuser or config.ipmi_user
         self.ipmipass = ipmipass or config.ipmi_password
         self.ipmidomain = ipmidomain or config.ipmi_domain
@@ -71,11 +75,14 @@ class PhysicalConsole(RemoteConsole):
         """
         Run a command using pexpect.spawn(). Return the child object.
         """
-        log.debug('pexpect command: %s', cmd)
-        return pexpect.spawn(
+        self.log.debug('pexpect command: %s', cmd)
+        p = pexpect.spawn(
             cmd,
-            logfile=self.logfile,
+            encoding='utf-8',
+            codec_errors="backslashreplace",
         )
+        p.logfile_read = io.StringIO()
+        return p
 
     def _get_console(self, readonly=True):
         def start():
@@ -84,7 +91,7 @@ class PhysicalConsole(RemoteConsole):
 
         child = start()
         if self.has_conserver and not child.isalive():
-            log.error("conserver failed to get the console; will try ipmitool")
+            self.log.error("conserver failed to get the console; will try ipmitool")
             self.has_conserver = False
             child = start()
         return child
@@ -114,7 +121,7 @@ class PhysicalConsole(RemoteConsole):
 
     def _check_ipmi_credentials(self):
         if not self.has_ipmi_credentials:
-            log.error(
+            self.log.error(
                 "Must set ipmi_user, ipmi_password, and ipmi_domain in "
                 ".teuthology.yaml"
             )
@@ -129,41 +136,108 @@ class PhysicalConsole(RemoteConsole):
                 timeout=t)
             if r != 0:
                 child.kill(15)
+            self.log.debug('console disconnect output: %s', child.logfile_read.getvalue().strip())
         else:
             child.send('~.')
             r = child.expect(
                 ['terminated ipmitool', pexpect.TIMEOUT, pexpect.EOF],
                 timeout=t)
+            self.log.debug('ipmitool disconnect output: %s', child.logfile_read.getvalue().strip())
             if r != 0:
                 self._pexpect_spawn_ipmi('sol deactivate')
+                self.log.debug('sol deactivate output: %s', child.logfile_read.getvalue().strip())
 
     def _wait_for_login(self, timeout=None, attempts=2):
         """
         Wait for login.  Retry if timeouts occur on commands.
         """
         t = timeout or self.timeout
-        log.debug('Waiting for login prompt on {s}'.format(s=self.shortname))
+        self.log.debug('Waiting for login prompt')
         # wait for login prompt to indicate boot completed
         for i in range(0, attempts):
             start = time.time()
             while time.time() - start < t:
                 child = self._get_console(readonly=False)
                 child.send('\n')
-                log.debug('expect: {s} login'.format(s=self.shortname))
                 r = child.expect(
                     ['{s} login: '.format(s=self.shortname),
                      pexpect.TIMEOUT,
                      pexpect.EOF],
                     timeout=(t - (time.time() - start)))
-                log.debug('expect before: {b}'.format(b=child.before))
-                log.debug('expect after: {a}'.format(a=child.after))
+                self.log.debug('expect before: {b}'.format(b=child.before))
+                self.log.debug('expect after: {a}'.format(a=child.after))
 
                 self._exit_session(child)
                 if r == 0:
                     return
         raise ConsoleError("Did not get a login prompt from %s!" % self.name)
 
-    def check_power(self, state, timeout=None):
+    def check_power(self, state: Literal["on","off"]):
+        c = self._pexpect_spawn_ipmi('power status')
+        r = c.expect(['Chassis Power is {s}'.format(
+            s=state), pexpect.EOF, pexpect.TIMEOUT], timeout=1)
+        self.log.debug('check power output: %s', c.logfile_read.getvalue().strip())
+        return r == 0
+
+    def set_power(self, state: PowerOnOffState, timeout: Optional[int]):
+        self.log.info(f"Power {state}")
+        timeout = timeout or self.timeout
+        sleep_time = 4
+        reissue_after_failures = 5
+        failures = 0
+        issued = False
+        succeeded = False
+        with safe_while(
+                sleep=sleep_time,
+                tries=int(timeout / sleep_time),
+                _raise=False,
+                action='wait for power on') as proceed:
+            while proceed():
+                if not issued:
+                    child = self._pexpect_spawn_ipmi(f"power {state}")
+                    rc = child.expect(
+                        [
+                            "Up/On" if state.lower() == "on" else "Down/Off",
+                            pexpect.EOF
+                        ],
+                        timeout=self.timeout
+                    )
+                    self.log.debug(
+                        f"power {state} output: {child.logfile_read.getvalue().strip()}"
+                    )
+                    if rc == 0:
+                        issued = True
+                    continue
+
+                if not succeeded:
+                    child = self._pexpect_spawn_ipmi('power status')
+                    rc = child.expect(
+                        [
+                            f"Chassis Power is {state}",
+                            pexpect.EOF,
+                            pexpect.TIMEOUT
+                        ],
+                        timeout=1
+                    )
+                    self.log.debug(
+                        f"check power output: {child.logfile_read.getvalue().strip()}"
+                    )
+                    if rc == 0:
+                        succeeded = True
+                        break
+                    failures += 1
+                    if failures == reissue_after_failures:
+                        issued = False
+
+        if issued and succeeded:
+            self.log.info(f"Power {state} completed")
+            return True
+        raise RuntimeError(
+            f"Failed to power {state} {self.shortname} in {self.timeout}s"
+        )
+        return False
+
+    def check_power_retries(self, state, timeout=None):
         """
         Check power.  Retry if EOF encountered on power check read.
         """
@@ -178,6 +252,7 @@ class PhysicalConsole(RemoteConsole):
                 c = self._pexpect_spawn_ipmi('power status')
                 r = c.expect(['Chassis Power is {s}'.format(
                     s=state), pexpect.EOF, pexpect.TIMEOUT], timeout=1)
+                self.log.debug('check power output: %s', c.logfile_read.getvalue().strip())
                 if r == 0:
                     return True
         return False
@@ -190,9 +265,8 @@ class PhysicalConsole(RemoteConsole):
             # check for login prompt at console
             self._wait_for_login(timeout)
             return True
-        except Exception as e:
-            log.info('Failed to get ipmi console status for {s}: {e}'.format(
-                s=self.shortname, e=e))
+        except Exception:
+            self.log.exception('Failed to get ipmi console status')
             return False
 
     def power_cycle(self, timeout=300):
@@ -201,63 +275,45 @@ class PhysicalConsole(RemoteConsole):
 
         :param timeout: How long to wait for login
         """
-        log.info('Power cycling {s}'.format(s=self.shortname))
+        self.log.info('Power cycling')
         child = self._pexpect_spawn_ipmi('power cycle')
         child.expect('Chassis Power Control: Cycle', timeout=self.timeout)
+        self.log.debug('power cycle output: %s', child.logfile_read.getvalue().strip())
         self._wait_for_login(timeout=timeout)
-        log.info('Power cycle for {s} completed'.format(s=self.shortname))
+        self.log.info('Power cycle completed')
 
     def hard_reset(self, wait_for_login=True):
         """
         Perform physical hard reset.  Retry if EOF returned from read
         and wait for login when complete.
         """
-        log.info('Performing hard reset of {s}'.format(s=self.shortname))
+        self.log.info('Performing hard reset')
         start = time.time()
         while time.time() - start < self.timeout:
             child = self._pexpect_spawn_ipmi('power reset')
             r = child.expect(['Chassis Power Control: Reset', pexpect.EOF],
                              timeout=self.timeout)
+            self.log.debug('power reset output: %s', child.logfile_read.getvalue().strip())
             if r == 0:
                 break
         if wait_for_login:
             self._wait_for_login()
-        log.info('Hard reset for {s} completed'.format(s=self.shortname))
+        self.log.info('Hard reset completed')
 
     def power_on(self):
         """
         Physical power on.  Loop checking cmd return.
         """
-        log.info('Power on {s}'.format(s=self.shortname))
-        start = time.time()
-        while time.time() - start < self.timeout:
-            child = self._pexpect_spawn_ipmi('power on')
-            r = child.expect(['Chassis Power Control: Up/On', pexpect.EOF],
-                             timeout=self.timeout)
-            if r == 0:
-                break
-        if self.check_power('on'):
-            log.info('Power on for {s} completed'.format(s=self.shortname))
-        else:
-            err_msg = 'Failed to power on {s}'.format(s=self.shortname)
-            raise RuntimeError(err_msg)
+        return self.set_power("on", timeout=None)
 
     def power_off(self):
         """
         Physical power off.  Loop checking cmd return.
         """
-        log.info('Power off {s}'.format(s=self.shortname))
-        start = time.time()
-        while time.time() - start < self.timeout:
-            child = self._pexpect_spawn_ipmi('power off')
-            r = child.expect(['Chassis Power Control: Down/Off', pexpect.EOF],
-                             timeout=self.timeout)
-            if r == 0:
-                break
-        if self.check_power('off', 60):
-            log.info('Power off for {s} completed'.format(s=self.shortname))
-        else:
-            log.error('Failed to power off {s}'.format(s=self.shortname))
+        try:
+            return self.set_power("off", timeout=None)
+        except Exception:
+            pass
 
     def power_off_for_interval(self, interval=30):
         """
@@ -265,17 +321,21 @@ class PhysicalConsole(RemoteConsole):
 
         :param interval: Length of power-off period.
         """
-        log.info('Power off {s} for {i} seconds'.format(
-            s=self.shortname, i=interval))
+        self.log.info('Power off for {i} seconds'.format(i=interval))
         child = self._pexpect_spawn_ipmi('power off')
         child.expect('Chassis Power Control: Down/Off', timeout=self.timeout)
+
+        self.log.debug('power off output: %s', child.logfile_read.getvalue().strip())
+        child.logfile_read.seek(0)
+        child.logfile_read.truncate()
 
         time.sleep(interval)
 
         child = self._pexpect_spawn_ipmi('power on')
         child.expect('Chassis Power Control: Up/On', timeout=self.timeout)
+        self.log.debug('power on output: %s', child.logfile_read.getvalue().strip())
         self._wait_for_login()
-        log.info('Power off for {i} seconds completed'.format(i=interval))
+        self.log.info('Power off for {i} seconds completed'.format(i=interval))
 
     def spawn_sol_log(self, dest_path):
         """
@@ -308,7 +368,7 @@ class PhysicalConsole(RemoteConsole):
 
         proc = start()
         if self.has_conserver and proc.poll() is not None:
-            log.error("conserver failed to get the console; will try ipmitool")
+            self.log.error("conserver failed to get the console; will try ipmitool")
             self.has_conserver = False
             proc = start()
         return proc
@@ -323,6 +383,7 @@ class VirtualConsole(RemoteConsole):
             raise RuntimeError("libvirt not found")
 
         self.shortname = self.getShortName(name)
+        self.log = log.getChild(self.shortname)
         status_info = teuthology.lock.query.get_status(self.shortname)
         try:
             if teuthology.lock.query.is_vm(status=status_info):
@@ -380,9 +441,8 @@ class VirtualConsole(RemoteConsole):
         """
         Simiulate power off for an interval.
         """
-        log.info('Power off {s} for {i} seconds'.format(
-            s=self.shortname, i=interval))
+        self.log.info('Power off for {i} seconds'.format(i=interval))
         self.vm_domain.info().destroy()
         time.sleep(interval)
         self.vm_domain.info().create()
-        log.info('Power off for {i} seconds completed'.format(i=interval))
+        self.log.info('Power off for {i} seconds completed'.format(i=interval))

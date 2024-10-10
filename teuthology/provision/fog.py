@@ -1,10 +1,10 @@
+import datetime
 import json
 import logging
 import requests
 import socket
 import re
 
-from datetime import datetime
 from paramiko import SSHException
 from paramiko.ssh_exception import NoValidConnectionsError
 
@@ -13,6 +13,7 @@ import teuthology.orchestra
 from teuthology.config import config
 from teuthology.contextutil import safe_while
 from teuthology.exceptions import MaxWhileTries
+from teuthology.orchestra.opsys import OS
 from teuthology import misc
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ class FOG(object):
             raise
         self._wait_for_ready()
         self._fix_hostname()
+        self._verify_installed_os()
         self.log.info("Deploy complete!")
 
     def do_request(self, url_suffix, data=None, method='GET', verify=True):
@@ -147,18 +149,28 @@ class FOG(object):
         represents it
         :returns: A dict describing the image
         """
-        name = '_'.join([
-            self.remote.machine_type, self.os_type.lower(), self.os_version])
-        resp = self.do_request(
-            '/image',
-            data=json.dumps(dict(name=name)),
-        )
-        obj = resp.json()
-        if not obj['count']:
+        def do_get(name):
+            resp = self.do_request(
+                '/image',
+                data=json.dumps(dict(name=name)),
+            )
+            obj = resp.json()
+            if obj['count']:
+                return obj['images'][0]
+
+        os_type = self.os_type.lower()
+        os_version = self.os_version
+        name = f"{self.remote.machine_type}_{os_type}_{os_version}"
+        if image := do_get(name):
+            return image
+        elif os_type == 'centos' and not os_version.endswith('.stream'):
+            image = do_get(f"{name}.stream")
+        if image:
+            return image
+        else:
             raise RuntimeError(
                 "Fog has no %s image. Available %s images: %s" %
                 (name, self.remote.machine_type, self.suggest_image_names()))
-        return obj['images'][0]
 
     def suggest_image_names(self):
         """
@@ -178,6 +190,8 @@ class FOG(object):
         """
         image_data = self.get_image_data()
         image_id = int(image_data['id'])
+        image_name = image_data.get("name")
+        self.log.debug(f"Requesting image {image_name} (ID {image_id})")
         self.do_request(
             '/host/%s' % host_id,
             method='PUT',
@@ -213,8 +227,8 @@ class FOG(object):
         for task in host_tasks:
             timestamp = task['createdTime']
             time_delta = (
-                datetime.utcnow() - datetime.strptime(
-                    timestamp, self.timestamp_format)
+                datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.strptime(
+                    timestamp, self.timestamp_format).replace(tzinfo=datetime.timezone.utc)
             ).total_seconds()
             # There should only be one deploy task matching our host. Just in
             # case there are multiple, select a very recent one.
@@ -251,13 +265,14 @@ class FOG(object):
         completed)
         """
         self.log.info("Waiting for deploy to finish")
-        with safe_while(sleep=15, tries=60) as proceed:
+        with safe_while(sleep=15, tries=120, timeout=config.fog_reimage_timeout) as proceed:
             while proceed():
                 if not self.deploy_task_active(task_id):
                     break
 
     def cancel_deploy_task(self,  task_id):
         """ Cancel an active deploy task """
+        self.log.debug(f"Canceling deploy task with ID {task_id}")
         resp = self.do_request(
             '/task/cancel',
             method='DELETE',
@@ -267,7 +282,7 @@ class FOG(object):
 
     def _wait_for_ready(self):
         """ Attempt to connect to the machine via SSH """
-        with safe_while(sleep=6, tries=100) as proceed:
+        with safe_while(sleep=6, timeout=config.fog_wait_for_ssh_timeout) as proceed:
             while proceed():
                 try:
                     self.remote.connect()
@@ -278,12 +293,26 @@ class FOG(object):
                     NoValidConnectionsError,
                     MaxWhileTries,
                     EOFError,
-                ):
-                    pass
+                ) as e:
+                    # log this, because otherwise lots of failures just
+                    # keep retrying without any notification (like, say,
+                    # a mismatched host key in ~/.ssh/known_hosts, or
+                    # something)
+                    self.log.warning(e)
         sentinel_file = config.fog.get('sentinel_file', None)
         if sentinel_file:
             cmd = "while [ ! -e '%s' ]; do sleep 5; done" % sentinel_file
-            self.remote.run(args=cmd, timeout=600)
+            action = f"wait for sentinel on {self.shortname}"
+            with safe_while(action=action, timeout=1800, increment=3) as proceed:
+                while proceed():
+                    try:
+                        self.remote.run(args=cmd, timeout=600)
+                        break
+                    except (
+                        ConnectionError,
+                        EOFError,
+                    ) as e:
+                        log.error(f"{e} on {self.shortname}")
         self.log.info("Node is ready")
 
     def _fix_hostname(self):
@@ -317,6 +346,14 @@ class FOG(object):
             args="sudo hostname %s" % self.shortname,
             check_status=False,
         )
+
+    def _verify_installed_os(self):
+        wanted_os = OS(name=self.os_type, version=self.os_version)
+        if self.remote.os != wanted_os:
+            raise RuntimeError(
+                f"Expected {self.remote.shortname}'s OS to be {wanted_os} but "
+                f"found {self.remote.os}"
+            )
 
     def destroy(self):
         """A no-op; we just leave idle nodes as-is"""

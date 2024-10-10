@@ -83,9 +83,9 @@ class GenericReason(Reason):
         else:
             if "Test failure:" in self.failure_reason:
                 return self.failure_reason == job.get_failure_reason()
-            elif re.search("workunit test (.*)\) on ", self.failure_reason):
-                workunit_name = re.search("workunit test (.*)\) on ", self.failure_reason).group(1)
-                other_match = re.search("workunit test (.*)\) on ", job.get_failure_reason())
+            elif re.search(r"workunit test (.*)\) on ", self.failure_reason):
+                workunit_name = re.search(r"workunit test (.*)\) on ", self.failure_reason).group(1)
+                other_match = re.search(r"workunit test (.*)\) on ", job.get_failure_reason())
                 return other_match is not None and workunit_name == other_match.group(1)
             else:
                 reason_ratio = difflib.SequenceMatcher(None, self.failure_reason, job.get_failure_reason()).ratio()
@@ -198,12 +198,13 @@ class DeadReason(Reason):
             else:
                 # I have BT but he doesn't, so we're different
                 return False
-
-        if self.last_tlog_line or job.get_last_tlog_line():
+        last_tlog_line = job.get_last_tlog_line()
+        if self.last_tlog_line is not None and last_tlog_line is not None:
             ratio = difflib.SequenceMatcher(None, self.last_tlog_line,
-                                            job.get_last_tlog_line()).ratio()
+                                            last_tlog_line).ratio()
             return ratio > 0.5
-        return True
+        else:
+            return self.last_tlog_line == last_tlog_line
 
 
 class TimeoutReason(Reason):
@@ -302,29 +303,34 @@ class Job(object):
         for line in file_obj:
             # Log prefix from teuthology.log
             if ".stderr:" in line:
+                # Only captures the error and disregard what ever comes before
                 line = line.split(".stderr:")[1]
 
-            if "FAILED assert" in line:
+            if "FAILED assert" in line or "__ceph_assert_fail" in line:
                 assertion = line.strip()
 
             if line.startswith(" ceph version"):
                 # The start of a backtrace!
                 bt_lines = [line]
-            elif line.startswith(" NOTE: a copy of the executable"):
-                # The backtrace terminated, if we have a buffer return it
-                if len(bt_lines):
-                    return ("".join(bt_lines)).strip(), assertion
-                else:
-                    log.warning("Saw end of BT but not start")
+            elif line.startswith(" NOTE: a copy of the executable") or \
+                line.strip().endswith("clone()") or \
+                "clone()+0x" in line:
+                    # The backtrace terminated, if we have a buffer return it
+                    if len(bt_lines):
+                        return ("".join(bt_lines)).strip(), assertion
+                    else:
+                        log.warning("Saw end of BT but not start")
             elif bt_lines:
                 # We're in a backtrace, push the line onto the list
                 if len(bt_lines) > MAX_BT_LINES:
-                    # Something wrong with our parsing, drop it
-                    log.warning("Ignoring malparsed backtrace: {0}".format(
+                    # We exceeded MAX_BT_LINES, drop it
+                    log.warning("Ignoring backtrace that exceeds MAX_BACKTRACE_LINES: {0}".format(
                         ", ".join(bt_lines[0:3])
                     ))
+                    log.warning("Either the backtrace is too long or we did a bad job of checking for end of backtrace!")
                     bt_lines = []
-                bt_lines.append(line)
+                else:
+                    bt_lines.append(line)
 
         return None, assertion
 
@@ -357,7 +363,7 @@ class Job(object):
         for line in grep(tlog_path, "command crashed with signal"):
             log.debug("Found a crash indication: {0}".format(line))
             # tasks.ceph.osd.1.plana82.stderr
-            match = re.search("tasks.ceph.([^\.]+).([^\.]+).([^\.]+).stderr", line)
+            match = re.search(r"tasks.ceph.([^\.]+).([^\.]+).([^\.]+).stderr", line)
             if not match:
                 log.warning("Not-understood crash indication {0}".format(line))
                 continue

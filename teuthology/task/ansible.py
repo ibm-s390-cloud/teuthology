@@ -1,38 +1,96 @@
 import json
 import logging
+import re
 import requests
 import os
+import pathlib
 import pexpect
 import yaml
 import shutil
 
 from tempfile import mkdtemp, NamedTemporaryFile
 
+from teuthology import repo_utils
 from teuthology.config import config as teuth_config
 from teuthology.exceptions import CommandFailedError, AnsibleFailedError
 from teuthology.job_status import set_status
-from teuthology.repo_utils import fetch_repo
-
 from teuthology.task import Task
+from teuthology.util.loggerfile import LoggerFile
 
 log = logging.getLogger(__name__)
 
-class LoggerFile(object):
-    """
-    A thin wrapper around a logging.Logger instance that provides a file-like
-    interface.
 
-    Used by Ansible.execute_playbook() when it calls pexpect.run()
-    """
-    def __init__(self, logger, level):
-        self.logger = logger
-        self.level = level
+class FailureAnalyzer:
+    def analyze(self, failure_log):
+        failure_obj = yaml.safe_load(failure_log)
+        lines = set()
+        if failure_obj is None:
+            return lines
+        for host_obj in failure_obj.values():
+            if not isinstance(host_obj, dict):
+                continue
+            lines = lines.union(self.analyze_host_record(host_obj))
+        return sorted(lines)
 
-    def write(self, string):
-        self.logger.log(self.level, string.decode('utf-8', 'ignore'))
+    def analyze_host_record(self, record):
+        lines = set()
+        for result in record.get("results", [record]):
+            cmd = result.get("cmd", "")
+            # When a CPAN task fails, we get _lots_ of stderr_lines, and they
+            # aren't practical to reduce meaningfully. Instead of analyzing lines,
+            # just report the command that failed.
+            if "cpan" in cmd:
+                lines.add(f"CPAN command failed: {cmd}")
+                continue
+            lines_to_analyze = []
+            if "stderr_lines" in result:
+                lines_to_analyze = result["stderr_lines"]
+            elif "msg" in result:
+                lines_to_analyze = result["msg"].split("\n")
+            lines_to_analyze.extend(result.get("err", "").split("\n"))
+            for line in lines_to_analyze:
+                line = self.analyze_line(line.strip())
+                if line:
+                    lines.add(line)
+        return list(lines)
 
-    def flush(self):
-        pass
+    def analyze_line(self, line):
+        if line.startswith("W: ") or line.endswith("?"):
+            return ""
+        drop_phrases = [
+            # apt output sometimes contains warnings or suggestions. Those won't be
+            # helpful, so throw them out.
+            r"^W: ",
+            r"\?$",
+            # some output from SSH is not useful
+            r"Warning: Permanently added .+ to the list of known hosts.",
+            r"^@+$",
+        ]
+        for phrase in drop_phrases:
+            match = re.search(rf"({phrase})", line, flags=re.IGNORECASE)
+            if match:
+                return ""
+
+        # Next, we can normalize some common phrases.
+        phrases = [
+            "connection timed out",
+            r"(unable to|could not) connect to [^ ]+",
+            r"temporary failure resolving [^ ]+",
+            r"Permissions \d+ for '.+' are too open.",
+        ]
+        for phrase in phrases:
+            match = re.search(rf"({phrase})", line, flags=re.IGNORECASE)
+            if match:
+                line = match.groups()[0]
+                break
+
+        # Strip out URLs for specific packages
+        package_re = re.compile(r"https?://.*\.(deb|rpm)")
+        line = package_re.sub("<package>", line)
+        # Strip out IP addresses
+        ip_re = re.compile(r"\[IP: \d+\.\d+\.\d+\.\d+( \d+)?\]")
+        line = ip_re.sub("", line)
+        return line
 
 
 class Ansible(Task):
@@ -141,7 +199,7 @@ class Ansible(Task):
         """
         repo = self.config.get('repo', '.')
         if repo.startswith(('http://', 'https://', 'git@', 'git://')):
-            repo_path = fetch_repo(
+            repo_path = repo_utils.fetch_repo(
                 repo,
                 self.config.get('branch', 'main'),
             )
@@ -262,7 +320,10 @@ class Ansible(Task):
 
     def begin(self):
         super(Ansible, self).begin()
-        self.execute_playbook()
+        if len(self.cluster.remotes) > 0:
+            self.execute_playbook()
+        else:
+            log.info("There are no remotes; skipping playbook execution")
 
     def execute_playbook(self, _logfile=None):
         """
@@ -276,6 +337,10 @@ class Ansible(Task):
         environ['ANSIBLE_FAILURE_LOG'] = self.failure_log.name
         environ['ANSIBLE_ROLES_PATH'] = "%s/roles" % self.repo_path
         environ['ANSIBLE_NOCOLOR'] = "1"
+        # Store collections in <repo root>/.ansible/
+        # This is the same path used in <repo root>/ansible.cfg
+        environ['ANSIBLE_COLLECTIONS_PATH'] = str(
+            pathlib.Path(__file__).parents[2] / ".ansible")
         args = self._build_args()
         command = ' '.join(args)
         log.debug("Running %s", command)
@@ -299,17 +364,20 @@ class Ansible(Task):
     def _handle_failure(self, command, status):
         self._set_status('dead')
         failures = None
-        with open(self.failure_log.name, 'r') as fail_log:
+        with open(self.failure_log.name, 'r') as fail_log_file:
+            fail_log = fail_log_file.read()
             try:
-                failures = yaml.safe_load(fail_log)
+                analyzer = FailureAnalyzer()
+                failures = analyzer.analyze(fail_log)
             except yaml.YAMLError as e:
                 log.error(
-                    "Failed to parse ansible failure log: {0} ({1})".format(
-                        self.failure_log.name, e
-                    )
+                    f"Failed to parse ansible failure log: {self.failure_log.name} ({e})"
                 )
-                fail_log.seek(0)
-                failures = fail_log.read().replace('\n', '')
+            except Exception:
+                log.exception(f"Failed to analyze ansible failure log: {self.failure_log.name}")
+            # If we hit an exception, or if analyze() returned nothing, use the log as-is
+            if not failures:
+                failures = fail_log.replace('\n', '')
 
         if failures:
             self._archive_failures()

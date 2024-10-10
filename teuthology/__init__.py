@@ -1,5 +1,5 @@
 from __future__ import print_function
-import os
+import os, sys
 try:
     import importlib.metadata as importlib_metadata
 except ImportError:
@@ -24,10 +24,15 @@ try:
 except ImportError:
     pass
 from gevent import monkey
+patch_threads=True
+for arg in sys.argv:
+    if "teuthology_api" in arg:
+        patch_threads=False
 monkey.patch_all(
     dns=False,
     # Don't patch subprocess to avoid http://tracker.ceph.com/issues/14990
     subprocess=False,
+    thread=patch_threads,
 )
 import sys
 from gevent.hub import Hub
@@ -52,6 +57,9 @@ logging.getLogger('requests.packages.urllib3.connectionpool').setLevel(
     logging.WARN)
 # if requests doesn't bundle it, shut it up anyway
 logging.getLogger('urllib3.connectionpool').setLevel(
+    logging.WARN)
+# We also don't need the "Converted retries value" messages
+logging.getLogger('urllib3.util.retry').setLevel(
     logging.WARN)
 
 logging.basicConfig(

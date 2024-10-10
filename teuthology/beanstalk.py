@@ -6,8 +6,8 @@ import pprint
 import sys
 from collections import OrderedDict
 
-from teuthology.config import config
 from teuthology import report
+from teuthology.config import config
 
 log = logging.getLogger(__name__)
 

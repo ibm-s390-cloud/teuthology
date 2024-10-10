@@ -1,5 +1,7 @@
 import logging
+import os
 
+import teuthology.exporter
 import teuthology.lock.query
 from teuthology.misc import decanonicalize_hostname, get_distro, get_distro_version
 
@@ -8,18 +10,18 @@ from teuthology.provision import downburst
 from teuthology.provision import fog
 from teuthology.provision import openstack
 from teuthology.provision import pelagos
-import os
 
 log = logging.getLogger(__name__)
 
 
-def _logfile(ctx, shortname):
-    if hasattr(ctx, 'config') and ctx.config.get('archive_path'):
-        return os.path.join(ctx.config['archive_path'],
-                            shortname + '.downburst.log')
+def _logfile(shortname: str, archive_path: str = ""):
+    if os.path.isfile(archive_path):
+        return f"{archive_path}/{shortname}.downburst.log"
+
 
 def get_reimage_types():
     return pelagos.get_types() + fog.get_types()
+
 
 def reimage(ctx, machine_name, machine_type):
     os_type = get_distro(ctx)
@@ -36,7 +38,21 @@ def reimage(ctx, machine_name, machine_type):
     else:
         raise Exception("The machine_type '%s' is not known to any "
                         "of configured provisioners" % machine_type)
-    return obj.create()
+    status = "fail"
+    try:
+        result = obj.create()
+        status = "success"
+    except Exception:
+        # We only need this clause so that we avoid triggering the finally
+        # clause below in cases where the exception raised is KeyboardInterrupt
+        # or SystemExit
+        raise
+    finally:
+        teuthology.exporter.NodeReimagingResults().record(
+            machine_type=machine_type,
+            status=status,
+        )
+    return result
 
 
 def create_if_vm(ctx, machine_name, _downburst=None):
@@ -78,8 +94,12 @@ def create_if_vm(ctx, machine_name, _downburst=None):
     return dbrst.create()
 
 
-def destroy_if_vm(ctx, machine_name, user=None, description=None,
-                  _downburst=None):
+def destroy_if_vm(
+    machine_name: str,
+    user: str = "",
+    description: str = "",
+    _downburst=None
+):
     """
     Use downburst to destroy a virtual machine
 
@@ -99,7 +119,7 @@ def destroy_if_vm(ctx, machine_name, user=None, description=None,
         log.error(msg.format(node=machine_name, as_user=user,
                              locked_by=status_info['locked_by']))
         return False
-    if (description is not None and description !=
+    if (description and description !=
             status_info['description']):
         msg = "Tried to destroy {node} with description {desc_arg} " + \
             "but it is locked with description {desc_lock}"
@@ -117,5 +137,5 @@ def destroy_if_vm(ctx, machine_name, user=None, description=None,
     dbrst = _downburst or \
         downburst.Downburst(name=machine_name, os_type=None,
                             os_version=None, status=status_info,
-                            logfile=_logfile(ctx, shortname))
+                            logfile=_logfile(description, shortname))
     return dbrst.destroy()

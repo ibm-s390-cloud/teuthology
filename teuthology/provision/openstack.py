@@ -27,7 +27,8 @@ class ProvisionOpenStack(OpenStack):
     """
     def __init__(self):
         super(ProvisionOpenStack, self).__init__()
-        self.user_data = tempfile.mktemp()
+        fd, self.user_data = tempfile.mkstemp()
+        os.close(fd)
         log.debug("ProvisionOpenStack: " + str(config.openstack))
         self.basename = 'target'
         self.up_string = 'The system is finally up'
@@ -151,7 +152,7 @@ class ProvisionOpenStack(OpenStack):
         """
         return the instance name suffixed with the IP address.
         """
-        digits = map(int, re.findall('(\d+)\.(\d+)\.(\d+)\.(\d+)', ip)[0])
+        digits = map(int, re.findall(r'(\d+)\.(\d+)\.(\d+)\.(\d+)', ip)[0])
         return prefix + "%03d%03d%03d%03d" % tuple(digits)
 
     def create(self, num, os_type, os_version, arch, resources_hint):

@@ -1,7 +1,11 @@
 import re
 
+from packaging.version import parse as parse_version, Version
+
+
 DISTRO_CODENAME_MAP = {
     "ubuntu": {
+        "24.04": "noble",
         "23.10": "mantic",
         "23.04": "lunar",
         "22.04": "jammy",
@@ -22,6 +26,9 @@ DISTRO_CODENAME_MAP = {
         "7": "wheezy",
         "8": "jessie",
         "9": "stretch",
+        "10": "buster",
+        "11": "bullseye",
+        "12": "bookworm",
     },
     "rhel": {
         "9": "plow",
@@ -30,6 +37,7 @@ DISTRO_CODENAME_MAP = {
         "6": "santiago",
     },
     "centos": {
+        "10": "stream",
         "9": "stream",
         "8": "core",
         "7": "core",
@@ -50,6 +58,9 @@ DISTRO_CODENAME_MAP = {
         "15.0": "leap",
         "15.1": "leap",
         "15.2": "leap",
+        "15.3": "leap",
+        "15.4": "leap",
+        "15.5": "leap",
         "42.2": "leap",
         "42.3": "leap",
     },
@@ -60,15 +71,18 @@ DISTRO_CODENAME_MAP = {
         "15.0": "sle",
         "15.1": "sle",
         "15.2": "sle",
+        "15.3": "sle",
+        "15.4": "sle",
+        "15.5": "sle",
     },
 }
 
 DEFAULT_OS_VERSION = dict(
     ubuntu="23.10",
     fedora="25",
-    centos="8.stream",
-    opensuse="15.0",
-    sle="15.0",
+    centos="9.stream",
+    opensuse="15.4",
+    sle="15.2",
     rhel="8.6",
     debian='8.0'
 )
@@ -164,6 +178,7 @@ class OS(object):
             package_type = 'deb'
         """
         str_ = os_release_str.strip()
+        version = cls._get_value(str_, 'VERSION_ID')
         name = cls._get_value(str_, 'ID').lower()
         if name == 'sles':
             name = 'sle'
@@ -171,9 +186,10 @@ class OS(object):
             name = 'opensuse'
         elif name == 'opensuse-tumbleweed':
             name = 'opensuse'
-        version = cls._get_value(str_, 'VERSION_ID')
+        elif name == 'centos':
+            if parse_version(version) >= Version("8.0"):
+                version = f"{version}.stream"
         obj = cls(name=name, version=version)
-
         return obj
 
 
@@ -237,7 +253,7 @@ class OS(object):
                     codename=repr(self.codename))
 
     def __eq__(self, other):
-        for slot in self.__slots__:
-            if not getattr(self, slot) == getattr(other, slot):
-                return False
-        return True
+        if self.name.lower() != other.name.lower():
+            return False
+        normalize = lambda s: s.lower().removesuffix(".stream")
+        return normalize(self.version) == normalize(other.version)

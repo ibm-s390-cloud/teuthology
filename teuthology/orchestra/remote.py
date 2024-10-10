@@ -4,16 +4,17 @@ Support for paramiko remote objects.
 
 import teuthology.lock.query
 import teuthology.lock.util
+from teuthology.contextutil import safe_while
 from teuthology.orchestra import run
 from teuthology.orchestra import connection
 from teuthology.orchestra import console
 from teuthology.orchestra.opsys import OS
 import teuthology.provision
 from teuthology import misc
-from teuthology.exceptions import CommandFailedError
+from teuthology.exceptions import CommandFailedError, UnitTestError
+from teuthology.util.scanner import UnitTestScanner
 from teuthology.misc import host_shortname
 import errno
-import time
 import re
 import logging
 from io import BytesIO
@@ -386,7 +387,7 @@ class Remote(RemoteShell):
         self.ssh = connection.connect(**args)
         return self.ssh
 
-    def reconnect(self, timeout=None, socket_timeout=None, sleep_time=30):
+    def reconnect(self, timeout=30, socket_timeout=None):
         """
         Attempts to re-establish connection. Returns True for success; False
         for failure.
@@ -395,18 +396,15 @@ class Remote(RemoteShell):
             self.ssh.close()
         if not timeout:
             return self._reconnect(timeout=socket_timeout)
-        start_time = time.time()
-        elapsed_time = lambda: time.time() - start_time
-        while elapsed_time() < timeout:
-            success = self._reconnect(timeout=socket_timeout)
-            if success:
-                log.info(f"Successfully reconnected to host '{self.name}'")
-                break
-            # Don't let time_remaining be < 0
-            time_remaining = max(0, timeout - elapsed_time())
-            sleep_val = min(time_remaining, sleep_time)
-            time.sleep(sleep_val)
-        return success
+        action = "reconnect to {self.shortname}"
+        with safe_while(action=action, timeout=timeout, increment=3, _raise=False) as proceed:
+            success = False
+            while proceed():
+                success = self._reconnect(timeout=socket_timeout)
+                if success:
+                    log.info(f"Successfully reconnected to host '{self.name}'")
+                    return success
+            return success
 
     def _reconnect(self, timeout=None):
         log.info(f"Trying to reconnect to host '{self.name}'")
@@ -493,7 +491,7 @@ class Remote(RemoteShell):
             return
         self.connect()
         if not self.is_online:
-            raise Exception('unable to connect')
+            raise ConnectionError(f'Failed to connect to {self.shortname}')
 
     @property
     def system_type(self):
@@ -521,9 +519,23 @@ class Remote(RemoteShell):
            not self.ssh.get_transport() or \
            not self.ssh.get_transport().is_active():
             if not self.reconnect():
-                raise Exception(f'Cannot connect to remote host {self.shortname}')
+                raise ConnectionError(f'Failed to reconnect to {self.shortname}')
         r = self._runner(client=self.ssh, name=self.shortname, **kwargs)
         r.remote = self
+        return r
+
+    def run_unit_test(self, xml_path_regex, output_yaml, **kwargs):
+        try:
+            r = self.run(**kwargs)
+        except CommandFailedError as exc:
+            if xml_path_regex:
+                error_msg = UnitTestScanner(remote=self).scan_and_write(xml_path_regex, output_yaml)
+                if error_msg:
+                    raise UnitTestError(
+                        exitstatus=exc.exitstatus, node=exc.node, 
+                        label=exc.label, message=error_msg
+                    )
+            raise exc
         return r
 
     def _sftp_put_file(self, local_path, remote_path):
@@ -546,12 +558,14 @@ class Remote(RemoteShell):
         sftp.get(remote_path, local_path)
         return local_path
 
-    def _sftp_open_file(self, remote_path):
+    def _sftp_open_file(self, remote_path, mode=None):
         """
         Use the paramiko.SFTPClient to open a file. Returns a
         paramiko.SFTPFile object.
         """
         sftp = self.ssh.open_sftp()
+        if mode:
+            return sftp.open(remote_path, mode)
         return sftp.open(remote_path)
 
     def _sftp_get_size(self, remote_path):
@@ -622,7 +636,7 @@ class Remote(RemoteShell):
             self.remove(path)
         return local_path
 
-    def get_tar(self, path, to_path, sudo=False):
+    def get_tar(self, path, to_path, sudo=False, compress=True):
         """
         Tar a remote directory and copy it locally
         """
@@ -632,7 +646,7 @@ class Remote(RemoteShell):
             args.append('sudo')
         args.extend([
             'tar',
-            'cz',
+            'cz' if compress else 'c',
             '-f', '-',
             '-C', path,
             '--',
@@ -645,7 +659,7 @@ class Remote(RemoteShell):
         self._sftp_get_file(remote_temp_path, to_path)
         self.remove(remote_temp_path)
 
-    def get_tar_stream(self, path, sudo=False):
+    def get_tar_stream(self, path, sudo=False, compress=True):
         """
         Tar-compress a remote directory and return the RemoteProcess
         for streaming
@@ -655,7 +669,7 @@ class Remote(RemoteShell):
             args.append('sudo')
         args.extend([
             'tar',
-            'cz',
+            'cz' if compress else 'c',
             '-f', '-',
             '-C', path,
             '--',
@@ -727,7 +741,7 @@ class Remote(RemoteShell):
 
 
 def getRemoteConsole(name, ipmiuser=None, ipmipass=None, ipmidomain=None,
-                     logfile=None, timeout=60):
+                     timeout=60):
     """
     Return either VirtualConsole or PhysicalConsole depending on name.
     """
@@ -737,4 +751,4 @@ def getRemoteConsole(name, ipmiuser=None, ipmipass=None, ipmidomain=None,
         except Exception:
             return None
     return console.PhysicalConsole(
-        name, ipmiuser, ipmipass, ipmidomain, logfile, timeout)
+        name, ipmiuser, ipmipass, ipmidomain, timeout)

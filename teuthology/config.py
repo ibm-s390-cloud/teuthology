@@ -33,12 +33,13 @@ class YamlConfig(MutableMapping):
             self._conf = dict()
 
     def load(self, conf=None):
-        if conf:
+        if conf is not None:
             if isinstance(conf, dict):
                 self._conf = conf
-            else:
+                return
+            elif conf:
                 self._conf = yaml.safe_load(conf)
-            return
+                return
         if os.path.exists(self.yaml_path):
             with open(self.yaml_path) as f:
                 self._conf = yaml.safe_load(f)
@@ -157,6 +158,7 @@ class TeuthologyConfig(YamlConfig):
         'job_threshold': 500,
         'lab_domain': 'front.sepia.ceph.com',
         'lock_server': 'http://paddles.front.sepia.ceph.com/',
+        'max_job_age': 1209600,  # 2 weeks
         'max_job_time': 259200,  # 3 days
         'nsupdate_url': 'http://nsupdate.front.sepia.ceph.com/update',
         'results_server': 'http://paddles.front.sepia.ceph.com/',
@@ -166,6 +168,8 @@ class TeuthologyConfig(YamlConfig):
         'src_base_path': os.path.expanduser('~/src'),
         'verify_host_keys': True,
         'watchdog_interval': 120,
+        'fog_reimage_timeout': 1800,
+        'fog_wait_for_ssh_timeout': 600,
         'kojihub_url': 'http://koji.fedoraproject.org/kojihub',
         'kojiroot_url': 'http://kojipkgs.fedoraproject.org/packages',
         'koji_task_url': 'https://kojipkgs.fedoraproject.org/work/',
@@ -191,6 +195,8 @@ class TeuthologyConfig(YamlConfig):
         },
         'rocketchat': None,
         'sleep_before_teardown': 0,
+        'ssh_key': None,
+        'active_machine_types': [],
     }
 
     def __init__(self, yaml_path=None):

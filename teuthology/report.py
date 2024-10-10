@@ -9,6 +9,7 @@ import socket
 from datetime import datetime
 
 import teuthology
+import teuthology.exporter
 from teuthology.config import config
 from teuthology.contextutil import safe_while
 from teuthology.job_status import get_status, set_status
@@ -143,7 +144,7 @@ class ResultsSerializer(object):
             return {}
         jobs = {}
         for item in os.listdir(archive_dir):
-            if not re.match('\d+$', item):
+            if not re.match(r'\d+$', item):
                 continue
             job_id = item
             job_dir = os.path.join(archive_dir, job_id)
@@ -471,6 +472,12 @@ def push_job_info(run_name, job_id, job_info, base_uri=None):
     if not reporter.base_uri:
         return
     reporter.report_job(run_name, job_id, job_info)
+    status = get_status(job_info)
+    if status in ["pass", "fail", "dead"] and "machine_type" in job_info:
+        teuthology.exporter.JobResults().record(
+            machine_type=job_info["machine_type"],
+            status=status,
+        )
 
 
 def try_push_job_info(job_config, extra_info=None):
@@ -579,6 +586,11 @@ def try_mark_run_dead(run_name):
             try:
                 log.info("Marking job {job_id} as dead".format(job_id=job_id))
                 reporter.report_job(run_name, job['job_id'], dead=True)
+                if "machine_type" in job:
+                    teuthology.exporter.JobResults().record(
+                        machine_type=job["machine_type"],
+                        status=job["status"],
+                    )
             except report_exceptions:
                 log.exception("Could not mark job as dead: {job_id}".format(
                     job_id=job_id))

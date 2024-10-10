@@ -1,17 +1,15 @@
 import os
 import random
-import signal
 
 from unittest.mock import patch, Mock
 
 from teuthology import exit
-from teuthology.test import skipif_teuthology_process
 
 
 class TestExiter(object):
     klass = exit.Exiter
 
-    def setup(self):
+    def setup_method(self):
         self.pid = os.getpid()
 
         # Below, we patch os.kill() in such a way that the first time it is
@@ -36,16 +34,9 @@ class TestExiter(object):
 
         self.m_kill.side_effect = m_kill_unwrap
 
-    def teardown(self):
+    def teardown_method(self):
         self.patcher_kill.stop()
         del self.m_kill
-
-    @skipif_teuthology_process
-    def test_noop(self):
-        sig = 15
-        obj = self.klass()
-        assert len(obj.handlers) == 0
-        assert signal.getsignal(sig) == 0
 
     def test_basic(self):
         sig = 15

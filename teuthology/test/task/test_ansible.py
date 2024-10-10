@@ -2,7 +2,7 @@ import json
 import os
 import yaml
 
-from mock import patch, DEFAULT, Mock
+from unittest.mock import patch, DEFAULT, Mock, mock_open
 from pytest import raises, mark
 from teuthology.util.compat import PY3
 if PY3:
@@ -15,25 +15,60 @@ from teuthology.exceptions import CommandFailedError
 from teuthology.orchestra.cluster import Cluster
 from teuthology.orchestra.remote import Remote
 from teuthology.task import ansible
-from teuthology.task.ansible import Ansible, CephLab
+from teuthology.task.ansible import Ansible, CephLab, FailureAnalyzer
 
 from teuthology.test.task import TestTask
+
+
+class TestFailureAnalyzer:
+    klass = FailureAnalyzer
+
+    @mark.parametrize(
+        'line,result',
+        [
+            [
+                "W: --force-yes is deprecated, use one of the options starting with --allow instead.",
+                "",
+            ],
+            [
+                "E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?",
+                "",
+            ],
+            [
+                "E: Failed to fetch http://security.ubuntu.com/ubuntu/pool/main/a/apache2/apache2-bin_2.4.41-4ubuntu3.14_amd64.deb  Unable to connect to archive.ubuntu.com:http:",
+                "Unable to connect to archive.ubuntu.com:http:"
+            ],
+            [
+                "E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/libb/libb-hooks-op-check-perl/libb-hooks-op-check-perl_0.22-1build2_amd64.deb  Temporary failure resolving 'archive.ubuntu.com'",
+                "Temporary failure resolving 'archive.ubuntu.com'"
+            ],
+            [
+                "Data could not be sent to remote host \"smithi068.front.sepia.ceph.com\".",
+                "Data could not be sent to remote host \"smithi068.front.sepia.ceph.com\"."
+            ],
+            [
+                "Permissions 0644 for '/root/.ssh/id_rsa' are too open.",
+                "Permissions 0644 for '/root/.ssh/id_rsa' are too open."
+            ],
+        ]
+    )
+    def test_lines(self, line, result):
+        obj = self.klass()
+        assert obj.analyze_line(line) == result
+
 
 class TestAnsibleTask(TestTask):
     klass = Ansible
     task_name = 'ansible'
 
-    def setup(self):
-        pass
-
-    def setup_method(self, method):
+    def setup_method(self):
         self.ctx = FakeNamespace()
         self.ctx.cluster = Cluster()
         self.ctx.cluster.add(Remote('user@remote1'), ['role1'])
         self.ctx.cluster.add(Remote('user@remote2'), ['role2'])
         self.ctx.config = dict()
         self.ctx.summary = dict()
-        self.ctx.archive = '../'
+        self.ctx.archive = ""
         self.task_config = dict(playbook=[])
         self.start_patchers()
 
@@ -123,7 +158,7 @@ class TestAnsibleTask(TestTask):
         task.find_repo()
         assert task.repo_path == os.path.expanduser(self.task_config['repo'])
 
-    @patch('teuthology.task.ansible.fetch_repo')
+    @patch('teuthology.repo_utils.fetch_repo')
     def test_find_repo_path_remote(self, m_fetch_repo):
         self.task_config.update(dict(
             repo='git://fake_host/repo.git',
@@ -133,7 +168,7 @@ class TestAnsibleTask(TestTask):
         task.find_repo()
         assert task.repo_path == os.path.expanduser('/tmp/repo')
 
-    @patch('teuthology.task.ansible.fetch_repo')
+    @patch('teuthology.repo_utils.fetch_repo')
     def test_find_repo_http(self, m_fetch_repo):
         self.task_config.update(dict(
             repo='http://example.com/my/repo',
@@ -143,7 +178,7 @@ class TestAnsibleTask(TestTask):
         m_fetch_repo.assert_called_once_with(self.task_config['repo'],
                                              'main')
 
-    @patch('teuthology.task.ansible.fetch_repo')
+    @patch('teuthology.repo_utils.fetch_repo')
     def test_find_repo_git(self, m_fetch_repo):
         self.task_config.update(dict(
             repo='git@example.com/my/repo',
@@ -366,11 +401,7 @@ class TestAnsibleTask(TestTask):
         task = self.klass(self.ctx, self.task_config)
         task.setup()
         with patch.object(ansible.pexpect, 'run') as m_run:
-            with patch('teuthology.task.ansible.open') as m_open:
-                fake_failure_log = Mock()
-                fake_failure_log.__enter__ = Mock()
-                fake_failure_log.__exit__ = Mock()
-                m_open.return_value = fake_failure_log
+            with patch('teuthology.task.ansible.open', mock_open()):
                 m_run.return_value = ('', 1)
                 with raises(CommandFailedError):
                     task.execute_playbook()
@@ -450,7 +481,7 @@ class TestAnsibleTask(TestTask):
         task.inventory = 'fake'
         with patch.object(ansible.shutil, 'rmtree') as m_rmtree:
             task.teardown()
-            assert m_rmtree.called_once_with('fake')
+            m_rmtree.assert_called_once_with('fake')
 
     def test_teardown_playbook(self):
         self.task_config.update(dict(
@@ -462,7 +493,7 @@ class TestAnsibleTask(TestTask):
         task.playbook_file.name = 'fake'
         with patch.object(ansible.os, 'remove') as m_remove:
             task.teardown()
-            assert m_remove.called_once_with('fake')
+            m_remove.assert_called_once_with('fake')
 
     def test_teardown_cleanup_with_vars(self):
         self.task_config.update(dict(
@@ -500,19 +531,30 @@ class TestAnsibleTask(TestTask):
             assert m_execute.called
             assert 'cleanup' in task.config['vars']
 
+    def test_no_remotes(self):
+        self.task_config.update(dict(
+            playbook=[],
+        ))
+        self.ctx.cluster.remotes = dict()
+        task = self.klass(self.ctx, self.task_config)
+        with patch.object(ansible.pexpect, 'run') as m_run:
+            task.setup()
+            task.begin()
+        assert not m_run.called
+
 
 class TestCephLabTask(TestAnsibleTask):
     klass = CephLab
     task_name = 'ansible.cephlab'
 
-    def setup(self):
-        super(TestCephLabTask, self).setup()
+    def setup_method(self):
+        super(TestCephLabTask, self).setup_method()
         self.task_config = dict()
 
     def start_patchers(self):
         super(TestCephLabTask, self).start_patchers()
         self.patchers['fetch_repo'] = patch(
-            'teuthology.task.ansible.fetch_repo',
+            'teuthology.repo_utils.fetch_repo',
         )
         self.patchers['fetch_repo'].return_value = 'PATH'
 
@@ -527,7 +569,7 @@ class TestCephLabTask(TestAnsibleTask):
         for name in self.patchers.keys():
             self.start_patcher(name)
 
-    @patch('teuthology.task.ansible.fetch_repo')
+    @patch('teuthology.repo_utils.fetch_repo')
     def test_find_repo_http(self, m_fetch_repo):
         repo = os.path.join(config.ceph_git_base_url,
                             'ceph-cm-ansible.git')
@@ -575,11 +617,7 @@ class TestCephLabTask(TestAnsibleTask):
         task.ctx.summary = dict()
         task.setup()
         with patch.object(ansible.pexpect, 'run') as m_run:
-            with patch('teuthology.task.ansible.open') as m_open:
-                fake_failure_log = Mock()
-                fake_failure_log.__enter__ = Mock()
-                fake_failure_log.__exit__ = Mock()
-                m_open.return_value = fake_failure_log
+            with patch('teuthology.task.ansible.open', mock_open()):
                 m_run.return_value = ('', 1)
                 with raises(CommandFailedError):
                     task.execute_playbook()
@@ -590,11 +628,7 @@ class TestCephLabTask(TestAnsibleTask):
         task = self.klass(self.ctx, self.task_config)
         task.setup()
         with patch.object(ansible.pexpect, 'run') as m_run:
-            with patch('teuthology.task.ansible.open') as m_open:
-                fake_failure_log = Mock()
-                fake_failure_log.__enter__ = Mock()
-                fake_failure_log.__exit__ = Mock()
-                m_open.return_value = fake_failure_log
+            with patch('teuthology.task.ansible.open', mock_open()):
                 m_run.return_value = ('', 1)
                 with raises(CommandFailedError):
                     task.execute_playbook()
