@@ -124,9 +124,9 @@ def get_distro_defaults(distro, machine_type):
     Given a distro (e.g. 'ubuntu') and machine type, return:
         (arch, release, pkg_type)
     """
-    arch = 'x86_64'
-    if distro in (None, 'None', 'rhel'):
-        distro = 'centos'
+    arch = 's390x'
+    if distro in (None, 'None', 'ubuntu'):
+        distro = 'ubuntu'
 
     try:
         os_version = DEFAULT_OS_VERSION[distro]
