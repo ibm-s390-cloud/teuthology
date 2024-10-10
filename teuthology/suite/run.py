@@ -270,7 +270,8 @@ class Run(object):
                 teuthology_branch = 'main'
             teuthology_sha1 = util.git_ls_remote(
                 'teuthology',
-                teuthology_branch
+                teuthology_branch,
+                'ibm-s390-cloud'
             )
         if not teuthology_sha1:
             exc = BranchNotFoundError(teuthology_branch, build_git_url('teuthology'))

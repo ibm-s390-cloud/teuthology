@@ -134,9 +134,9 @@ def get_distro_defaults(distro, machine_type):
     if distro in (None, 'None'):
         os_version = '23.10'
         machine_type == 'm1306'
-    elif distro in ('rhel', 'centos'):
-        os_type = 'centos'
-        os_version = '7'
+    #elif distro in ('rhel', 'centos'):
+    #    os_type = 'centos'
+    #    os_version = '7'
     elif distro == 'ubuntu':
         os_type = distro
         if machine_type == 'm1306':

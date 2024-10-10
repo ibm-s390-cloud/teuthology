@@ -457,9 +457,9 @@ def install_latest_rh_kernel(ctx, config):
         config = {}
     if config.get('skip'):
         return
-    with parallel() as p:
-        for remote in ctx.cluster.remotes.keys():
-            p.spawn(update_rh_kernel, remote)
+    #with parallel() as p:
+    #    for remote in ctx.cluster.remotes.keys():
+    #        p.spawn(update_rh_kernel, remote)
 
 
 def update_rh_kernel(remote):
@@ -557,7 +557,7 @@ def install_and_reboot(ctx, need_install, config):
         # kernel entry appears later in the file than a submenu entry,
         # it's actually nested under that submenu.  If it gets more
         # complex this will totally break.
-
+        """
         kernel_entries = role_remote.sh([
                 'egrep',
                 '(submenu|menuentry.*' + kernel_title + ').*{',
@@ -577,7 +577,7 @@ def install_and_reboot(ctx, need_install, config):
                         break
         log.info('submenu_title:{}'.format(submenu_title))
         log.info('default_title:{}'.format(default_title))
-
+        """
         proc = role_remote.run(
             args=[
                 # use the title(s) to construct the content of
@@ -856,7 +856,7 @@ def install_kernel(remote, role_config, path=None, version=None):
             update_grub_rpm(remote, version)
         remote.run( args=['sudo', 'shutdown', '-r', 'now'], wait=False )
         return
-
+    """
     if package_type == 'deb':
         newversion = get_latest_image_version_deb(remote, dist_release, role_config)
         if 'ubuntu' in dist_release:
@@ -885,8 +885,8 @@ def install_kernel(remote, role_config, path=None, version=None):
             teuthology.delete_file(remote, '/etc/grub.d/01_ceph_kernel', sudo=True, force=True)
             teuthology.sudo_write_file(remote, '/etc/grub.d/01_ceph_kernel', StringIO(grubfile), '755')
             log.info('Distro Kernel Version: {version}'.format(version=newversion))
-            remote.run(args=['sudo', 'update-grub'])
-            remote.run(args=['sudo', 'shutdown', '-r', 'now'], wait=False )
+            #remote.run(args=['sudo', 'update-grub'])
+            #remote.run(args=['sudo', 'shutdown', '-r', 'now'], wait=False )
             return
 
         if 'debian' in dist_release:
@@ -894,7 +894,7 @@ def install_kernel(remote, role_config, path=None, version=None):
             log.info('Distro Kernel Version: {version}'.format(version=newversion))
             remote.run( args=['sudo', 'shutdown', '-r', 'now'], wait=False )
             return
-
+    """
 
 def update_grub_rpm(remote, newversion):
     """
@@ -914,8 +914,8 @@ def update_grub_rpm(remote, newversion):
         for line in newgrub:
             data += line + '\n'
         temp_file_path = remote.mktemp()
-        teuthology.sudo_write_file(remote, temp_file_path, StringIO(data), '755')
-        teuthology.move_file(remote, temp_file_path, '/boot/grub/grub.conf', True)
+        #teuthology.sudo_write_file(remote, temp_file_path, StringIO(data), '755')
+        #teuthology.move_file(remote, temp_file_path, '/boot/grub/grub.conf', True)
     else:
         #Update grub menu entry to new version.
         grub2_kernel_select_generic(remote, newversion, 'rpm')
@@ -933,10 +933,10 @@ def grub2_kernel_select_generic(remote, newversion, ostype):
         grubconfig = '/boot/grub2/grub.cfg'
     if ostype == 'deb':
         grubset = 'grub-set-default'
-        grubconfig = '/boot/grub/grub.cfg'
+        grubconfig = '/etc/zipl.conf'
         mkconfig = 'grub-mkconfig'
-    remote.run(args=['sudo', mkconfig, '-o', grubconfig, ])
-    grub2conf = teuthology.get_file(remote, grubconfig, sudo=True).decode()
+    #remote.run(args=['sudo', mkconfig, '-o', grubconfig, ])
+    #grub2conf = teuthology.get_file(remote, grubconfig, sudo=True).decode()
     entry_num = 0
     if '\nmenuentry ' not in grub2conf:
         # okay, do the newer (el8) grub2 thing
@@ -1230,9 +1230,9 @@ def task(ctx, config):
     validate_config(ctx, config)
     log.info('config %s, timeout %d' % (config, timeout))
 
-    with parallel() as p:
-        for role, role_config in config.items():
-            p.spawn(process_role, ctx, config, timeout, role, role_config)
+    #with parallel() as p:
+    #    for role, role_config in config.items():
+    #        p.spawn(process_role, ctx, config, timeout, role, role_config)
 
 
 def process_role(ctx, config, timeout, role, role_config):
