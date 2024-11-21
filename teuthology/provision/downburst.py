@@ -302,7 +302,8 @@ def get_distro_from_downburst():
                                  '14.04(trusty)', 'utopic(utopic)',
                                  '16.04(xenial)', '18.04(bionic)',
                                  '20.04(focal)', '22.04(jammy)',
-                                 '23.04(lunar)', '23.10(mantic)'],
+                                 '23.04(lunar)', '23.10(mantic)',
+                                 '24.04(noble)'],
                      'sles': ['12-sp3', '15-sp1', '15-sp2'],
                      'opensuse': ['12.3', '15.1', '15.2'],
                      'debian': ['6.0', '7.0', '8.0']}
