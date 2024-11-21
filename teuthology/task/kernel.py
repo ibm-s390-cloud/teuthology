@@ -2,6 +2,7 @@
 Kernel installation task
 """
 
+import contextlib
 import logging
 import os
 import re
@@ -32,7 +33,7 @@ from teuthology.task.install.deb import install_dep_packages
 
 log = logging.getLogger(__name__)
 
-CONFIG_DEFAULT = {'branch': 'main'}
+CONFIG_DEFAULT = {'branch': 'distro', 'sha1': 'distro'}
 TIMEOUT_DEFAULT = 300
 
 VERSION_KEYS = ['branch', 'tag', 'sha1', 'deb', 'rpm', 'koji', 'koji_task']
@@ -999,14 +1000,14 @@ def generate_legacy_grub_entry(remote, newversion):
         if re.match('^title', line):
             titleline = line
             titlelinenum = linenum
-        if re.match('(^\s+)root', line):
+        if re.match(r'(^\s+)root', line):
             rootline = line
-        if re.match('(^\s+)kernel', line):
+        if re.match(r'(^\s+)kernel', line):
             kernelline = line
             for word in line.split(' '):
                 if 'vmlinuz' in word:
                     kernelversion = word.split('vmlinuz-')[-1]
-        if re.match('(^\s+)initrd', line):
+        if re.match(r'(^\s+)initrd', line):
             initline = line
         if (kernelline != '') and (initline != ''):
             break
@@ -1049,8 +1050,9 @@ def get_image_version(remote, path):
         raise UnsupportedPackageTypeError(remote)
 
     for file in files.split('\n'):
-        if '/boot/vmlinuz-' in file:
-            version = file.split('/boot/vmlinuz-')[1]
+        match = re.search(r'/lib/modules/(.*)/modules\.order$', file)
+        if match:
+            version = match.group(1)
             break
 
     log.debug("get_image_version: %s", version)
@@ -1069,9 +1071,9 @@ def get_latest_image_version_rpm(remote):
         kernel_pkg_name = "kernel-default"
     else:
         kernel_pkg_name = "kernel"
-    # get tip of package list ordered by install time
+    # get tip of package list ordered by descending version
     newest_package = remote.sh(
-        'rpm -q %s --last | head -n 1' % kernel_pkg_name).strip()
+        'rpm -q %s | sort -rV | head -n 1' % kernel_pkg_name).strip()
     for kernel in newest_package.split():
         if kernel.startswith('kernel'):
             if 'ceph' not in kernel:
@@ -1147,6 +1149,7 @@ def get_sha1_from_pkg_name(path):
     return sha1
 
 
+@contextlib.contextmanager
 def task(ctx, config):
     """
     Make sure the specified kernel is installed.
@@ -1250,6 +1253,11 @@ def task(ctx, config):
     # with parallel() as p:
     #     for role, role_config in config.items():
     #         p.spawn(process_role, ctx, config, timeout, role, role_config)
+
+    try:
+        yield
+    finally:
+        pass
 
 
 def process_role(ctx, config, timeout, role, role_config):

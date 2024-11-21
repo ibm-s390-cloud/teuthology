@@ -1,3 +1,4 @@
+import datetime
 import logging
 import os
 import subprocess
@@ -6,62 +7,73 @@ import yaml
 import requests
 
 from urllib.parse import urljoin
-from datetime import datetime
 
-import teuthology
-from teuthology import report
-from teuthology import safepath
+from teuthology import exporter, dispatcher, kill, report, safepath
 from teuthology.config import config as teuth_config
-from teuthology.exceptions import SkipJob
+from teuthology.exceptions import SkipJob, MaxWhileTries
 from teuthology import setup_log_file, install_except_hook
-from teuthology.lock.ops import reimage_machines
 from teuthology.misc import get_user, archive_logs, compress_logs
 from teuthology.config import FakeNamespace
-from teuthology.job_status import get_status
-from teuthology.nuke import nuke
-from teuthology.kill import kill_job
-from teuthology.task.internal import add_remotes
+from teuthology.lock import ops as lock_ops
+from teuthology.task import internal
 from teuthology.misc import decanonicalize_hostname as shortname
 from teuthology.lock import query
+from teuthology.util import sentry
 
 log = logging.getLogger(__name__)
 
 
 def main(args):
-
-    verbose = args["--verbose"]
-    archive_dir = args["--archive-dir"]
-    teuth_bin_path = args["--bin-path"]
-    config_file_path = args["--job-config"]
-
-    with open(config_file_path, 'r') as config_file:
+    with open(args.job_config, 'r') as config_file:
         job_config = yaml.safe_load(config_file)
 
     loglevel = logging.INFO
-    if verbose:
+    if args.verbose:
         loglevel = logging.DEBUG
+    logging.getLogger().setLevel(loglevel)
     log.setLevel(loglevel)
 
     log_file_path = os.path.join(job_config['archive_path'],
                                  f"supervisor.{job_config['job_id']}.log")
     setup_log_file(log_file_path)
     install_except_hook()
+    try:
+        dispatcher.check_job_expiration(job_config)
+    except SkipJob:
+        return 0
 
     # reimage target machines before running the job
     if 'targets' in job_config:
-        reimage(job_config)
-        with open(config_file_path, 'w') as f:
+        node_count = len(job_config["targets"])
+        # If a job (e.g. from the nop suite) doesn't need nodes, avoid
+        # submitting a zero here.
+        if node_count:
+            with exporter.NodeReimagingTime().time(
+                machine_type=job_config["machine_type"],
+                node_count=node_count,
+            ):
+                reimage(job_config)
+        else:
+            reimage(job_config)
+        with open(args.job_config, 'w') as f:
             yaml.safe_dump(job_config, f, default_flow_style=False)
 
-    try:
+    suite = job_config.get("suite")
+    if suite:
+        with exporter.JobTime().time(suite=suite):
+            return run_job(
+                job_config,
+                args.bin_path,
+                args.archive_dir,
+                args.verbose
+            )
+    else:
         return run_job(
             job_config,
-            teuth_bin_path,
-            archive_dir,
-            verbose
+            args.bin_path,
+            args.archive_dir,
+            args.verbose
         )
-    except SkipJob:
-        return 0
 
 
 def run_job(job_config, teuth_bin_path, archive_dir, verbose):
@@ -130,7 +142,11 @@ def run_job(job_config, teuth_bin_path, archive_dir, verbose):
     arg.extend(['--', job_archive])
 
     log.debug("Running: %s" % ' '.join(arg))
-    p = subprocess.Popen(args=arg)
+    p = subprocess.Popen(
+        args=arg,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     log.info("Job archive: %s", job_config['archive_path'])
     log.info("Job PID: %s", str(p.pid))
 
@@ -165,6 +181,7 @@ def failure_is_reimage(failure_reason):
     else:
         return False
 
+
 def check_for_reimage_failures_and_mark_down(targets, count=10):
     # Grab paddles history of jobs in the machine
     # and count the number of reimaging errors
@@ -173,9 +190,8 @@ def check_for_reimage_failures_and_mark_down(targets, count=10):
     for k, _ in targets.items():
         machine = k.split('@')[-1]
         url = urljoin(
-                base_url,
-                '/nodes/{0}/jobs/?count={1}'.format(
-                machine, count)
+            base_url,
+            '/nodes/{0}/jobs/?count={1}'.format(machine, count)
         )
         resp = requests.get(url)
         jobs = resp.json()
@@ -189,14 +205,15 @@ def check_for_reimage_failures_and_mark_down(targets, count=10):
             continue
         # Mark machine down
         machine_name = shortname(k)
-        teuthology.lock.ops.update_lock(
-	    machine_name,
-	    description='reimage failed {0} times'.format(count),
-	    status='down',
-	)
+        lock_ops.update_lock(
+            machine_name,
+            description='reimage failed {0} times'.format(count),
+            status='down',
+        )
         log.error(
             'Reimage failed {0} times ... marking machine down'.format(count)
         )
+
 
 def reimage(job_config):
     # Reimage the targets specified in job config
@@ -206,12 +223,19 @@ def reimage(job_config):
     report.try_push_job_info(ctx.config, dict(status='waiting'))
     targets = job_config['targets']
     try:
-        reimaged = reimage_machines(ctx, targets, job_config['machine_type'])
+        reimaged = lock_ops.reimage_machines(ctx, targets, job_config['machine_type'])
     except Exception as e:
         log.exception('Reimaging error. Nuking machines...')
         # Reimage failures should map to the 'dead' status instead of 'fail'
-        report.try_push_job_info(ctx.config, dict(status='dead', failure_reason='Error reimaging machines: ' + str(e)))
-        nuke(ctx, True)
+        report.try_push_job_info(
+            ctx.config,
+            dict(status='dead', failure_reason='Error reimaging machines: ' + str(e))
+        )
+        # There isn't an actual task called "reimage", but it doesn't seem
+        # necessary to create a whole new Sentry tag for this.
+        ctx.summary = {
+            'sentry_event': sentry.report_error(job_config, e, task_name="reimage")
+        }
         # Machine that fails to reimage after 10 times will be marked down
         check_for_reimage_failures_and_mark_down(targets)
         raise
@@ -224,7 +248,7 @@ def unlock_targets(job_config):
     serializer = report.ResultsSerializer(teuth_config.archive_base)
     job_info = serializer.job_info(job_config['name'], job_config['job_id'])
     machine_statuses = query.get_statuses(job_info['targets'].keys())
-    # only unlock/nuke targets if locked and description matches
+    # only unlock targets if locked and description matches
     locked = []
     for status in machine_statuses:
         name = shortname(status['name'])
@@ -240,23 +264,13 @@ def unlock_targets(job_config):
         locked.append(name)
     if not locked:
         return
-    job_status = get_status(job_info)
-    if job_status == 'pass' or \
-            (job_config.get('unlock_on_failure', False) and not job_config.get('nuke-on-error', False)):
+    if job_config.get("unlock_on_failure", True):
         log.info('Unlocking machines...')
-        fake_ctx = create_fake_context(job_config)
-        for machine in locked:
-            teuthology.lock.ops.unlock_one(fake_ctx,
-                                           machine, job_info['owner'],
-                                           job_info['archive_path'])
-    if job_status != 'pass' and job_config.get('nuke-on-error', False):
-        log.info('Nuking machines...')
-        fake_ctx = create_fake_context(job_config)
-        nuke(fake_ctx, True)
+        lock_ops.unlock_safe(locked, job_info["owner"], job_info["name"], job_info["job_id"])
 
 
 def run_with_watchdog(process, job_config):
-    job_start_time = datetime.utcnow()
+    job_start_time = datetime.datetime.now(datetime.timezone.utc)
 
     # Only push the information that's relevant to the watchdog, to save db
     # load
@@ -270,18 +284,20 @@ def run_with_watchdog(process, job_config):
     hit_max_timeout = False
     while process.poll() is None:
         # Kill jobs that have been running longer than the global max
-        run_time = datetime.utcnow() - job_start_time
+        run_time = datetime.datetime.now(datetime.timezone.utc) - job_start_time
         total_seconds = run_time.days * 60 * 60 * 24 + run_time.seconds
         if total_seconds > teuth_config.max_job_time:
             hit_max_timeout = True
             log.warning("Job ran longer than {max}s. Killing...".format(
                 max=teuth_config.max_job_time))
             try:
-                # kill processes but do not nuke yet so we can save
+                # kill processes but do not unlock yet so we can save
                 # the logs, coredumps, etc.
-                kill_job(job_info['name'], job_info['job_id'],
-                         teuth_config.archive_base, job_config['owner'],
-                         skip_nuke=True)
+                kill.kill_job(
+                    job_info['name'], job_info['job_id'],
+                    teuth_config.archive_base, job_config['owner'],
+                    skip_unlock=True
+                )
             except Exception:
                 log.exception('Failed to kill job')
 
@@ -293,13 +309,18 @@ def run_with_watchdog(process, job_config):
 
             try:
                 # this time remove everything and unlock the machines
-                kill_job(job_info['name'], job_info['job_id'],
-                         teuth_config.archive_base, job_config['owner'])
+                kill.kill_job(
+                    job_info['name'], job_info['job_id'],
+                    teuth_config.archive_base, job_config['owner']
+                )
             except Exception:
                 log.exception('Failed to kill job and unlock machines')
 
         # calling this without a status just updates the jobs updated time
-        report.try_push_job_info(job_info)
+        try:
+            report.try_push_job_info(job_info)
+        except MaxWhileTries:
+            log.exception("Failed to report job status; ignoring")
         time.sleep(teuth_config.watchdog_interval)
 
     # we no longer support testing theses old branches
@@ -313,7 +334,8 @@ def run_with_watchdog(process, job_config):
     extra_info = dict(status='dead')
     if hit_max_timeout:
         extra_info['failure_reason'] = 'hit max job timeout'
-    report.try_push_job_info(job_info, extra_info)
+    if not (job_config.get('first_in_suite') or job_config.get('last_in_suite')):
+        report.try_push_job_info(job_info, extra_info)
 
 
 def create_fake_context(job_config, block=False):
@@ -329,6 +351,7 @@ def create_fake_context(job_config, block=False):
         'os_type': job_config.get('os_type', 'ubuntu'),
         'os_version': os_version,
         'name': job_config['name'],
+        'job_id': job_config['job_id'],
     }
 
     return FakeNamespace(ctx_args)
@@ -340,7 +363,7 @@ def transfer_archives(run_name, job_id, archive_base, job_config):
 
     if 'archive' in job_info:
         ctx = create_fake_context(job_config)
-        add_remotes(ctx, job_config)
+        internal.add_remotes(ctx, job_config)
 
         for log_type, log_path in job_info['archive'].items():
             if log_type == 'init':

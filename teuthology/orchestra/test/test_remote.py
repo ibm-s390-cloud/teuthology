@@ -1,18 +1,20 @@
 from mock import patch, Mock, MagicMock
+from pytest import raises
 
 from io import BytesIO
 
 from teuthology.orchestra import remote
 from teuthology.orchestra import opsys
 from teuthology.orchestra.run import RemoteProcess
+from teuthology.exceptions import CommandFailedError, UnitTestError
 
 
 class TestRemote(object):
 
-    def setup(self):
+    def setup_method(self):
         self.start_patchers()
 
-    def teardown(self):
+    def teardown_method(self):
         self.stop_patchers()
 
     def start_patchers(self):
@@ -60,10 +62,28 @@ class TestRemote(object):
         rem = remote.Remote(name='jdoe@xyzzy.example.com', ssh=self.m_ssh)
         rem._runner = m_run
         result = rem.run(args=args)
-        assert m_transport.getpeername.called_once_with()
-        assert m_run.called_once_with(args=args)
+        m_transport.getpeername.assert_called_once_with()
+        m_run_call_kwargs = m_run.call_args_list[0][1]
+        assert m_run_call_kwargs['args'] == args
         assert result is proc
         assert result.remote is rem
+
+    @patch('teuthology.util.scanner.UnitTestScanner.scan_and_write')
+    def test_run_unit_test(self, m_scan_and_write):
+        m_transport = MagicMock()
+        m_transport.getpeername.return_value = ('name', 22)
+        self.m_ssh.get_transport.return_value = m_transport
+        m_run = MagicMock(name="run", side_effect=CommandFailedError('mocked error', 1, 'smithi'))
+        args = [
+            'something',
+            'more',
+        ]
+        rem = remote.Remote(name='jdoe@xyzzy.example.com', ssh=self.m_ssh)
+        rem._runner = m_run
+        m_scan_and_write.return_value = "Error Message"
+        with raises(UnitTestError) as exc:
+            rem.run_unit_test(args=args, xml_path_regex="xml_path", output_yaml="yaml_path")
+        assert str(exc.value) == "Unit test failed on smithi with status 1: 'Error Message'"
 
     def test_hostname(self):
         m_transport = MagicMock()
@@ -101,7 +121,7 @@ class TestRemote(object):
         stdout.seek(0)
         proc = RemoteProcess(
             client=self.m_ssh,
-            args='fakey',
+            args=args,
             )
         proc._stdout_buf = Mock()
         proc._stdout_buf.channel = Mock()
@@ -111,15 +131,12 @@ class TestRemote(object):
         m_run.return_value = proc
         r = remote.Remote(name='jdoe@xyzzy.example.com', ssh=self.m_ssh)
         r._runner = m_run
-        assert m_transport.getpeername.called_once_with()
-        assert proc._stdout_buf.channel.recv_exit_status.called_once_with()
-        assert m_run.called_once_with(
-            client=self.m_ssh,
-            args=args,
-            stdout=BytesIO(),
-            name=r.shortname,
-        )
         assert r.arch == 'test_arch'
+        assert len(m_run.call_args_list) == 1
+        m_run_call_kwargs = m_run.call_args_list[0][1]
+        assert m_run_call_kwargs['client'] == self.m_ssh
+        assert m_run_call_kwargs['name'] == r.shortname
+        assert m_run_call_kwargs['args'] == ' '.join(args)
 
     def test_host_key(self):
         m_key = MagicMock()

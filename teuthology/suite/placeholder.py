@@ -45,13 +45,13 @@ def substitute_placeholders(input_dict, values_dict):
 # Template for the config that becomes the base for each generated job config
 dict_templ = {
     'branch': Placeholder('ceph_branch'),
+    'expire': Placeholder('expire'),
     'sha1': Placeholder('ceph_hash'),
     'teuthology_branch': Placeholder('teuthology_branch'),
     'teuthology_sha1': Placeholder('teuthology_sha1'),
     'archive_upload': Placeholder('archive_upload'),
     'archive_upload_key': Placeholder('archive_upload_key'),
     'machine_type': Placeholder('machine_type'),
-    'nuke-on-error': True,
     'os_type': Placeholder('distro'),
     'os_version': Placeholder('distro_version'),
     'overrides': {
@@ -73,8 +73,8 @@ dict_templ = {
                 }
             },
             'flavor': Placeholder('flavor'),
-            'log-ignorelist': ['\(MDS_ALL_DOWN\)',
-                              '\(MDS_UP_LESS_THAN_MAX\)'],
+            'log-ignorelist': [r'\(MDS_ALL_DOWN\)',
+                              r'\(MDS_UP_LESS_THAN_MAX\)'],
             'sha1': Placeholder('ceph_hash'),
         },
         'ceph-deploy': {
@@ -83,7 +83,6 @@ dict_templ = {
                     'log file': '/var/log/ceph/ceph-$name.$pid.log'
                 },
                 'mon': {
-                    'osd default pool size': 2
                 }
             }
         },

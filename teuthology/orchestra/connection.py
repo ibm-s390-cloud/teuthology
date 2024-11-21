@@ -79,13 +79,19 @@ def connect(user_at_host, host_key=None, keep_alive=False, timeout=60,
         timeout=timeout
     )
 
-    ssh_config_path = os.path.expanduser("~/.ssh/config")
+    key_filename = key_filename or config.ssh_key
+    ssh_config_path = config.ssh_config_path or "~/.ssh/config"
+    ssh_config_path = os.path.expanduser(ssh_config_path)
     if os.path.exists(ssh_config_path):
         ssh_config = paramiko.SSHConfig()
         ssh_config.parse(open(ssh_config_path))
         opts = ssh_config.lookup(host)
         if not key_filename and 'identityfile' in opts:
             key_filename = opts['identityfile']
+        if 'hostname' in opts:
+            connect_args['hostname'] = opts['hostname']
+        if 'user' in opts:
+            connect_args['username'] = opts['user']
 
     if key_filename:
         if not isinstance(key_filename, list):
@@ -98,13 +104,20 @@ def connect(user_at_host, host_key=None, keep_alive=False, timeout=60,
     if not retry:
         ssh.connect(**connect_args)
     else:
-        # Retries are implemented using safe_while
-        with safe_while(sleep=1, action='connect to ' + host) as proceed:
+        with safe_while(sleep=1, increment=3, action='connect to ' + host) as proceed:
             while proceed():
+                auth_err_msg = f"Error authenticating with {host}"
                 try:
                     ssh.connect(**connect_args)
                     break
+                except EOFError:
+                    log.error(f"{auth_err_msg}: EOFError")
                 except paramiko.AuthenticationException as e:
-                    log.error(f"Error authenticating with {host}: {str(e)}")
+                    log.error(f"{auth_err_msg}: {repr(e)}")
+                except paramiko.SSHException as e:
+                    auth_err_msg = f"{auth_err_msg}: {repr(e)}"
+                    if not key_filename:
+                        auth_err_msg = f"{auth_err_msg} (No SSH private key found!)"
+                    log.exception(auth_err_msg)
     ssh.get_transport().set_keepalive(keep_alive)
     return ssh

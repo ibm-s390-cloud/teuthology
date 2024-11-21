@@ -1,7 +1,7 @@
 import pytest
 import docopt
 
-from unittest.mock import patch, call, Mock
+from unittest.mock import patch, call
 
 from teuthology import run
 from scripts import run as scripts_run
@@ -126,22 +126,19 @@ class TestRun(object):
         assert result == "/some/other/suite/path/qa"
 
     @patch("teuthology.run.get_status")
-    @patch("teuthology.run.nuke")
     @patch("yaml.safe_dump")
     @patch("teuthology.report.try_push_job_info")
     @patch("teuthology.run.email_results")
     @patch("teuthology.run.open")
     @patch("sys.exit")
-    def test_report_outcome(self, m_sys_exit, m_open, m_email_results, m_try_push_job_info, m_safe_dump, m_nuke, m_get_status):
+    def test_report_outcome(self, m_sys_exit, m_open, m_email_results, m_try_push_job_info, m_safe_dump, m_get_status):
         m_get_status.return_value = "fail"
-        fake_ctx = Mock()
         summary = {"failure_reason": "reasons"}
         summary_dump = "failure_reason: reasons\n"
-        config = {"nuke-on-error": True, "email-on-error": True}
-        config_dump = "nuke-on-error: true\nemail-on-error: true\n"
+        config = {"email-on-error": True}
+        config_dump = "email-on-error: true\n"
         m_safe_dump.side_effect = [None, summary_dump, config_dump]
-        run.report_outcome(config, "the/archive/path", summary, fake_ctx)
-        assert m_nuke.called
+        run.report_outcome(config, "the/archive/path", summary)
         m_try_push_job_info.assert_called_with(config, summary)
         m_open.assert_called_with("the/archive/path/summary.yaml", "w")
         assert m_email_results.called
@@ -218,6 +215,48 @@ class TestRun(object):
         # ensures os_type and os_version are property overwritten
         assert fake_ctx["config"]["os_type"] == "os_type"
         assert fake_ctx["config"]["os_version"] == "os_version"
+
+    @patch("teuthology.run.set_up_logging")
+    @patch("teuthology.run.setup_config")
+    @patch("teuthology.run.get_user")
+    @patch("teuthology.run.write_initial_metadata")
+    @patch("teuthology.report.try_push_job_info")
+    @patch("teuthology.run.get_machine_type")
+    @patch("teuthology.run.get_summary")
+    @patch("yaml.safe_dump")
+    @patch("teuthology.run.validate_tasks")
+    @patch("teuthology.run.get_initial_tasks")
+    @patch("teuthology.run.fetch_tasks_if_needed")
+    @patch("teuthology.run.run_tasks")
+    @patch("teuthology.run.report_outcome")
+    def test_main_interactive(
+        self,
+        m_report_outcome,
+        m_run_tasks,
+        m_fetch_tasks_if_needed,
+        m_get_initial_tasks,
+        m_validate_tasks,
+        m_safe_dump,
+        m_get_summary,
+        m_get_machine_type,
+        m_try_push_job_info,
+        m_write_initial_metadata,
+        m_get_user,
+        m_setup_config,
+        m_set_up_logging,
+    ):
+        config = {"job_id": 1}
+        m_setup_config.return_value = config
+        m_get_machine_type.return_value = "machine_type"
+        doc = scripts_run.__doc__
+        args = docopt.docopt(doc, [
+            "--interactive-on-error",
+            "path/to/config.yml",
+        ])
+        run.main(args)
+        args, kwargs = m_run_tasks.call_args
+        fake_ctx = kwargs["ctx"]._conf
+        assert fake_ctx['interactive_on_error'] is True
 
     def test_get_teuthology_command(self):
         doc = scripts_run.__doc__

@@ -1,4 +1,5 @@
 import copy
+import datetime
 import logging
 import os
 import pwd
@@ -8,14 +9,11 @@ import time
 
 from humanfriendly import format_timespan
 
-from datetime import datetime
-from tempfile import NamedTemporaryFile
 from teuthology import repo_utils
 
 from teuthology.config import config, JobConfig
 from teuthology.exceptions import (
     BranchMismatchError, BranchNotFoundError, CommitNotFoundError,
-    VersionNotFoundError
 )
 from teuthology.misc import deep_merge, get_results_url
 from teuthology.orchestra.opsys import OS
@@ -25,6 +23,7 @@ from teuthology.suite import util
 from teuthology.suite.merge import config_merge
 from teuthology.suite.build_matrix import build_matrix
 from teuthology.suite.placeholder import substitute_placeholders, dict_templ
+from teuthology.util.time import parse_offset, parse_timestamp, TIMESTAMP_FMT
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +33,7 @@ class Run(object):
     WAIT_PAUSE = 5 * 60
     __slots__ = (
         'args', 'name', 'base_config', 'suite_repo_path', 'base_yaml_paths',
-        'base_args', 'package_versions', 'kernel_dict', 'config_input',
-        'timestamp', 'user',
+        'base_args', 'kernel_dict', 'config_input', 'timestamp', 'user', 'os',
     )
 
     def __init__(self, args):
@@ -45,19 +43,15 @@ class Run(object):
         self.args = args
         # We assume timestamp is a datetime.datetime object
         self.timestamp = self.args.timestamp or \
-            datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
-        self.user = self.args.user or pwd.getpwuid(os.getuid()).pw_name
-
+            datetime.datetime.now().strftime(TIMESTAMP_FMT)
+        self.user = self.args.owner or pwd.getpwuid(os.getuid()).pw_name
         self.name = self.make_run_name()
-
         if self.args.ceph_repo:
             config.ceph_git_url = self.args.ceph_repo
         if self.args.suite_repo:
             config.ceph_qa_suite_git_url = self.args.suite_repo
 
         self.base_config = self.create_initial_config()
-        # caches package versions to minimize requests to gbs
-        self.package_versions = dict()
 
         # Interpret any relative paths as being relative to ceph-qa-suite
         # (absolute paths are unchanged by this)
@@ -90,6 +84,16 @@ class Run(object):
 
         :returns: A JobConfig object
         """
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expires = self.get_expiration()
+        if expires:
+            if now > expires:
+                util.schedule_fail(
+                    f"Refusing to schedule because the expiration date is in the past: {self.args.expire}",
+                    dry_run=self.args.dry_run,
+                )
+
+        self.os = self.choose_os()
         self.kernel_dict = self.choose_kernel()
         ceph_hash = self.choose_ceph_hash()
         # We don't store ceph_version because we don't use it yet outside of
@@ -101,7 +105,7 @@ class Run(object):
             self.suite_repo_path = self.args.suite_dir
         else:
             self.suite_repo_path = util.fetch_repos(
-                suite_branch, test_name=self.name, dry_run=self.args.dry_run)
+                suite_branch, test_name=self.name, dry_run=self.args.dry_run, commit=suite_hash)
         teuthology_branch, teuthology_sha1 = self.choose_teuthology_branch()
 
 
@@ -118,27 +122,60 @@ class Run(object):
             teuthology_branch=teuthology_branch,
             teuthology_sha1=teuthology_sha1,
             machine_type=self.args.machine_type,
-            distro=self.args.distro,
-            distro_version=self.args.distro_version,
+            distro=self.os.name,
+            distro_version=self.os.version,
             archive_upload=config.archive_upload,
             archive_upload_key=config.archive_upload_key,
             suite_repo=config.get_ceph_qa_suite_git_url(),
             suite_relpath=self.args.suite_relpath,
             flavor=self.args.flavor,
+            expire=expires.strftime(TIMESTAMP_FMT) if expires else None,
         )
         return self.build_base_config()
+
+    def get_expiration(self, _base_time: datetime.datetime | None = None) -> datetime.datetime | None:
+        """
+        _base_time: For testing, calculate relative offsets from this base time
+
+        :returns:   True if the job should run; False if it has expired
+        """
+        log.info(f"Checking for expiration ({self.args.expire})")
+        expires_str = self.args.expire
+        if expires_str is None:
+            return None
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if _base_time is None:
+            _base_time = now
+        try:
+            expires = parse_timestamp(expires_str)
+        except ValueError:
+            expires = _base_time + parse_offset(expires_str)
+        return expires
+
+    def choose_os(self):
+        os_type = self.args.distro
+        os_version = self.args.distro_version
+        if not (os_type and os_version):
+            os_ = util.get_distro_defaults(
+                self.args.distro, self.args.machine_type)[2]
+        else:
+            os_ = OS(os_type, os_version)
+        return os_
 
     def choose_kernel(self):
         # Put together a stanza specifying the kernel hash
         if self.args.kernel_branch == 'distro':
             kernel_hash = 'distro'
+            kernel_branch = 'distro'
         # Skip the stanza if '-k none' is given
         elif self.args.kernel_branch is None or \
              self.args.kernel_branch.lower() == 'none':
             kernel_hash = None
+            kernel_branch = None
         else:
+            kernel_branch = self.args.kernel_branch
             kernel_hash = util.get_gitbuilder_hash(
-                'kernel', self.args.kernel_branch, 'default',
+                'kernel', kernel_branch, 'default',
                 self.args.machine_type, self.args.distro,
                 self.args.distro_version,
             )
@@ -148,9 +185,13 @@ class Run(object):
                      branch=self.args.kernel_branch),
                      dry_run=self.args.dry_run,
                 )
+        kdb = True
+        if self.args.kdb is not None:
+            kdb = self.args.kdb
+
         if kernel_hash:
             log.info("kernel sha1: {hash}".format(hash=kernel_hash))
-            kernel_dict = dict(kernel=dict(kdb=True, sha1=kernel_hash))
+            kernel_dict = dict(kernel=dict(branch=kernel_branch, kdb=kdb, sha1=kernel_hash))
             if kernel_hash != 'distro':
                 kernel_dict['kernel']['flavor'] = 'default'
         else:
@@ -165,6 +206,7 @@ class Run(object):
         """
         repo_name = self.ceph_repo_name
 
+        ceph_hash = None
         if self.args.ceph_sha1:
             ceph_hash = self.args.ceph_sha1
             if self.args.validate_sha1:
@@ -194,13 +236,14 @@ class Run(object):
         if config.suite_verify_ceph_hash and not self.args.newest:
             # don't bother if newest; we'll search for an older one
             # Get the ceph package version
-            try:
-                ceph_version = util.package_version_for_hash(
-                    ceph_hash, self.args.flavor, self.args.distro,
-                    self.args.distro_version, self.args.machine_type,
-                )
-            except Exception as exc:
-                util.schedule_fail(str(exc), self.name, dry_run=self.args.dry_run)
+            ceph_version = util.package_version_for_hash(
+                ceph_hash, self.args.flavor, self.os.name,
+                self.os.version, self.args.machine_type,
+            )
+            if not ceph_version:
+                msg = f"Packages for os_type '{self.os.name}', flavor " \
+                    f"{self.args.flavor} and ceph hash '{ceph_hash}' not found"
+                util.schedule_fail(msg, self.name, dry_run=self.args.dry_run)
             log.info("ceph version: {ver}".format(ver=ceph_version))
             return ceph_version
         else:
@@ -294,7 +337,7 @@ class Run(object):
 
     @staticmethod
     def _repo_name(url):
-        return re.sub('\.git$', '', url.split('/')[-1])
+        return re.sub(r'\.git$', '', url.split('/')[-1])
 
     def choose_suite_branch(self):
         suite_repo_name = self.suite_repo_name
@@ -324,14 +367,27 @@ class Run(object):
 
     def choose_suite_hash(self, suite_branch):
         suite_repo_name = self.suite_repo_name
-        suite_repo_project_or_url = self.args.suite_repo or 'ceph-qa-suite'
-        suite_hash = util.git_ls_remote(
-            suite_repo_project_or_url,
-            suite_branch
-        )
-        if not suite_hash:
-            exc = BranchNotFoundError(suite_branch, suite_repo_name)
-            util.schedule_fail(message=str(exc), name=self.name, dry_run=self.args.dry_run)
+        suite_hash = None
+        if self.args.suite_sha1:
+            suite_hash = self.args.suite_sha1
+            if self.args.validate_sha1:
+                suite_hash = util.git_validate_sha1(suite_repo_name, suite_hash)
+            if not suite_hash:
+                exc = CommitNotFoundError(
+                    self.args.suite_sha1,
+                    '%s.git' % suite_repo_name
+                )
+                util.schedule_fail(message=str(exc), name=self.name, dry_run=self.args.dry_run)
+            log.info("suite sha1 explicitly supplied")
+        else:
+            suite_repo_project_or_url = self.args.suite_repo or 'ceph-qa-suite'
+            suite_hash = util.git_ls_remote(
+                suite_repo_project_or_url,
+                suite_branch
+            )
+            if not suite_hash:
+                exc = BranchNotFoundError(suite_branch, suite_repo_name)
+                util.schedule_fail(message=str(exc), name=self.name, dry_run=self.args.dry_run)
         log.info("%s branch: %s %s", suite_repo_name, suite_branch, suite_hash)
         return suite_hash
 
@@ -343,6 +399,9 @@ class Run(object):
         job_config.user = self.user
         job_config.timestamp = self.timestamp
         job_config.priority = self.args.priority
+        job_config.seed = self.args.seed
+        if self.args.subset:
+            job_config.subset = '/'.join(str(i) for i in self.args.subset)
         if self.args.email:
             job_config.email = self.args.email
         if self.args.owner:
@@ -473,31 +532,16 @@ class Run(object):
                 full_job_config = copy.deepcopy(self.base_config.to_dict())
                 deep_merge(full_job_config, parsed_yaml)
                 flavor = util.get_install_task_flavor(full_job_config)
-                # Get package versions for this sha1, os_type and flavor. If
-                # we've already retrieved them in a previous loop, they'll be
-                # present in package_versions and gitbuilder will not be asked
-                # again for them.
-                try:
-                    self.package_versions = util.get_package_versions(
-                        sha1,
-                        os_type,
-                        os_version,
-                        flavor,
-                        self.package_versions
-                    )
-                except VersionNotFoundError:
-                    pass
-                if not util.has_packages_for_distro(
-                    sha1, os_type, os_version, flavor, self.package_versions
-                ):
-                    m = "Packages for os_type '{os}', flavor {flavor} and " + \
-                        "ceph hash '{ver}' not found"
-                    log.error(m.format(os=os_type, flavor=flavor, ver=sha1))
+                version = util.package_version_for_hash(sha1, flavor, os_type,
+                    os_version, self.args.machine_type)
+                if not version:
                     jobs_missing_packages.append(job)
+                    log.error(f"Packages for os_type '{os_type}', flavor {flavor} and "
+                         f"ceph hash '{sha1}' not found")
                     # optimization: one missing package causes backtrack in newest mode;
                     # no point in continuing the search
                     if newest:
-                        return jobs_missing_packages, None
+                        return jobs_missing_packages, []
 
             jobs_to_schedule.append(job)
         return jobs_missing_packages, jobs_to_schedule
@@ -511,13 +555,10 @@ class Run(object):
             log_prefix = ''
             if job in jobs_missing_packages:
                 log_prefix = "Missing Packages: "
-                if (
-                    not self.args.dry_run and
-                    not config.suite_allow_missing_packages
-                ):
+                if not config.suite_allow_missing_packages:
                     util.schedule_fail(
-                        "At least one job needs packages that don't exist for "
-                        "hash {sha1}.".format(sha1=self.base_config.sha1),
+                        "At least one job needs packages that don't exist "
+                        f"for hash {self.base_config.sha1}.",
                         name,
                         dry_run=self.args.dry_run,
                     )
@@ -583,6 +624,9 @@ Note: If you still want to go ahead, use --job-threshold 0'''
         log.debug('Suite %s in %s' % (suite_name, suite_path))
         log.debug(f"subset = {self.args.subset}")
         log.debug(f"no_nested_subset = {self.args.no_nested_subset}")
+        if self.args.dry_run:
+            log.debug("Base job config:\n%s" % self.base_config)
+
         configs = build_matrix(suite_path,
                                subset=self.args.subset,
                                no_nested_subset=self.args.no_nested_subset,
@@ -594,18 +638,9 @@ Note: If you still want to go ahead, use --job-threshold 0'''
             filter_out=self.args.filter_out,
             filter_all=self.args.filter_all,
             filter_fragments=self.args.filter_fragments,
+            base_config=self.base_config,
+            seed=self.args.seed,
             suite_name=suite_name))
-
-        if self.args.dry_run:
-            log.debug("Base job config:\n%s" % self.base_config)
-
-        # create, but do not write, the temp file here, so it can be
-        # added to the args in collect_jobs, but not filled until
-        # any backtracking is done
-        base_yaml_path = NamedTemporaryFile(
-            prefix='schedule_suite_', delete=False
-        ).name
-        self.base_yaml_paths.insert(0, base_yaml_path)
 
         # compute job limit in respect of --sleep-before-teardown
         job_limit = self.args.limit or 0
@@ -644,16 +679,18 @@ Note: If you still want to go ahead, use --job-threshold 0'''
         # if not, do it once
         backtrack = 0
         limit = self.args.newest
+        sha1s = []
+        jobs_to_schedule = []
+        jobs_missing_packages = []
         while backtrack <= limit:
             jobs_missing_packages, jobs_to_schedule = \
                 self.collect_jobs(arch, configs, self.args.newest, job_limit)
             if jobs_missing_packages and self.args.newest:
-                new_sha1 = \
-                    util.find_git_parent('ceph', self.base_config.sha1)
-                if new_sha1 is None:
+                if not sha1s:
+                    sha1s = util.find_git_parents('ceph', str(self.base_config.sha1), self.args.newest)
+                if not sha1s:
                     util.schedule_fail('Backtrack for --newest failed', name, dry_run=self.args.dry_run)
-                 # rebuild the base config to resubstitute sha1
-                self.config_input['ceph_hash'] = new_sha1
+                self.config_input['ceph_hash'] = sha1s.pop(0)
                 self.base_config = self.build_base_config()
                 backtrack += 1
                 continue
@@ -669,12 +706,6 @@ Note: If you still want to go ahead, use --job-threshold 0'''
                     dry_run=self.args.dry_run,
                 )
 
-        if self.args.dry_run:
-            log.debug("Base job config:\n%s" % self.base_config)
-
-        with open(base_yaml_path, 'w+b') as base_yaml:
-            base_yaml.write(str(self.base_config).encode())
-
         if jobs_to_schedule:
             self.write_rerun_memo()
 
@@ -685,8 +716,6 @@ Note: If you still want to go ahead, use --job-threshold 0'''
         self.check_num_jobs(len(jobs_to_schedule))
 
         self.schedule_jobs(jobs_missing_packages, jobs_to_schedule, name)
-
-        os.remove(base_yaml_path)
 
         count = len(jobs_to_schedule)
         missing_count = len(jobs_missing_packages)

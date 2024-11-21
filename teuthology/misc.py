@@ -18,9 +18,10 @@ import re
 from sys import stdin
 import pprint
 import datetime
-from types import MappingProxyType
 
 from tarfile import ReadError
+
+from typing import Optional, TypeVar
 
 from teuthology.util.compat import urljoin, urlopen, HTTPError
 
@@ -50,9 +51,9 @@ def host_shortname(hostname):
     else:
         return hostname.split('.', 1)[0]
 
-def canonicalize_hostname(hostname, user='ubuntu'):
+def canonicalize_hostname(hostname, user: Optional[str] ='ubuntu'):
     hostname_expr = hostname_expr_templ.format(
-        lab_domain=config.lab_domain.replace('.', '\.'))
+        lab_domain=config.lab_domain.replace('.', r'\.'))
     match = re.match(hostname_expr, hostname)
     if _is_ipv4(hostname) or _is_ipv6(hostname):
         return "%s@%s" % (user, hostname)
@@ -82,7 +83,7 @@ def canonicalize_hostname(hostname, user='ubuntu'):
 def decanonicalize_hostname(hostname):
     lab_domain = ''
     if config.lab_domain:
-        lab_domain='\.' + config.lab_domain.replace('.', '\.')
+        lab_domain=r'\.' + config.lab_domain.replace('.', r'\.')
     hostname_expr = hostname_expr_templ.format(lab_domain=lab_domain)
     match = re.match(hostname_expr, hostname)
     if match:
@@ -108,21 +109,7 @@ def config_file(string):
     return config_dict
 
 
-class MergeConfig(argparse.Action):
-    """
-    Used by scripts to mergeg configurations.   (nuke, run, and
-    schedule, for example)
-    """
-    def __call__(self, parser, namespace, values, option_string=None):
-        """
-        Perform merges of all the day in the config dictionaries.
-        """
-        config_dict = getattr(namespace, self.dest)
-        for new in values:
-            deep_merge(config_dict, new)
-
-
-def merge_configs(config_paths):
+def merge_configs(config_paths) -> dict:
     """ Takes one or many paths to yaml config files and merges them
         together, returning the result.
     """
@@ -135,7 +122,7 @@ def merge_configs(config_paths):
             continue
         else:
             with open(conf_path) as partial_file:
-                partial_dict = yaml.safe_load(partial_file)
+                partial_dict: dict = yaml.safe_load(partial_file)
         try:
             conf_dict = deep_merge(conf_dict, partial_dict)
         except Exception:
@@ -745,8 +732,8 @@ def pull_directory(remote, remotedir, localdir, write_to=copy_fileobj):
               remote.shortname, remotedir, localdir)
     if not os.path.exists(localdir):
         os.mkdir(localdir)
-    r = remote.get_tar_stream(remotedir, sudo=True)
-    tar = tarfile.open(mode='r|gz', fileobj=r.stdout)
+    r = remote.get_tar_stream(remotedir, sudo=True, compress=False)
+    tar = tarfile.open(mode='r|', fileobj=r.stdout)
     while True:
         ti = tar.next()
         if ti is None:
@@ -998,7 +985,8 @@ def replace_all_with_clients(cluster, config):
     return norm_config
 
 
-def deep_merge(a, b):
+DeepMerge = TypeVar('DeepMerge')
+def deep_merge(a: DeepMerge, b: DeepMerge) -> DeepMerge:
     """
     Deep Merge.  If a and b are both lists, all elements in b are
     added into a.  If a and b are both dictionaries, elements in b are
@@ -1008,21 +996,18 @@ def deep_merge(a, b):
     """
     if b is None:
         return a
-    elif isinstance(a, list):
+    if a is None:
+        return deep_merge(b.__class__(), b)
+    if isinstance(a, list):
         assert isinstance(b, list)
         a.extend(b)
         return a
-    elif isinstance(a, dict):
-        assert isinstance(b, dict) or isinstance(b, MappingProxyType)
+    if isinstance(a, dict):
+        assert isinstance(b, dict)
         for (k, v) in b.items():
             a[k] = deep_merge(a.get(k), v)
         return a
-    elif isinstance(b, dict) or isinstance(b, list):
-        return deep_merge(b.__class__(), b)
-    elif isinstance(b, MappingProxyType):
-        return deep_merge(dict(), b)
-    else:
-        return b
+    return b
 
 
 def get_valgrind_args(testdir, name, preamble, v, exit_on_first_error=True):
@@ -1099,7 +1084,8 @@ def ssh_keyscan(hostnames, _raise=True):
     for hostname in hostnames:
         with safe_while(
             sleep=1,
-            tries=5 if _raise else 1,
+            tries=15 if _raise else 1,
+            increment=1,
             _raise=_raise,
             action="ssh_keyscan " + hostname,
         ) as proceed:
@@ -1137,9 +1123,12 @@ def _ssh_keyscan(hostname):
         line = line.strip()
         if line and not line.startswith('#'):
             log.error(line)
+    keys = list()
     for line in p.stdout:
         host, key = line.strip().decode().split(' ', 1)
-        return key
+        keys.append(key)
+    if len(keys) > 0:
+        return sorted(keys)[0]
 
 
 def ssh_keyscan_wait(hostname):
@@ -1180,29 +1169,19 @@ def stop_daemons_of_type(ctx, type_, cluster='ceph'):
 def get_system_type(remote, distro=False, version=False):
     """
     If distro, return distro.
-    If version, return version (lsb_release -rs)
+    If version, return version
     If both, return both.
     If neither, return 'deb' or 'rpm' if distro is known to be one of those
-    Finally, if unknown, return the unfiltered distro (from lsb_release -is)
     """
-    system_value = remote.sh('sudo lsb_release -is').strip()
-    log.debug("System to be installed: %s" % system_value)
     if version:
-        version = remote.sh('sudo lsb_release -rs').strip()
+        version = remote.os.version
     if distro and version:
-        return system_value.lower(), version
+        return remote.os.name, version
     if distro:
-        return system_value.lower()
+        return remote.os.name
     if version:
         return version
-    if system_value in ['Ubuntu', 'Debian']:
-        return "deb"
-    if system_value in ['CentOS', 'Fedora', 'RedHatEnterpriseServer',
-                        'RedHatEnterprise',
-                        'CentOSStream',
-                        'openSUSE', 'openSUSE project', 'SUSE', 'SUSE LINUX']:
-        return "rpm"
-    return system_value
+    return remote.os.package_type
 
 def get_pkg_type(os_type):
     if os_type in ('centos', 'fedora', 'opensuse', 'rhel', 'sle'):
@@ -1377,7 +1356,7 @@ def compress_logs(ctx, remote_dir):
     run.wait(
         ctx.cluster.run(
             args=(f"sudo find {remote_dir} -name *.log -print0 | "
-                  f"sudo xargs -0 --no-run-if-empty -- gzip --"),
+                  f"sudo xargs --max-args=1 --max-procs=0 --verbose -0 --no-run-if-empty -- gzip -5 --verbose --"),
             wait=False,
         ),
     )

@@ -5,6 +5,7 @@ import os
 from types import MappingProxyType
 import yaml
 
+from teuthology.config import JobConfig
 from teuthology.suite.build_matrix import combine_path
 from teuthology.suite.util import strip_fragment_path
 from teuthology.misc import deep_merge
@@ -14,7 +15,7 @@ log = logging.getLogger(__name__)
 TEUTHOLOGY_TEMPLATE = MappingProxyType({
   "teuthology": {
     "fragments_dropped": [],
-    "meta": MappingProxyType({}),
+    "meta": {},
     "postmerge": [],
   }
 })
@@ -114,7 +115,13 @@ def config_merge(configs, suite_name=None, **kwargs):
     postmerge scripts. Logically, if a filter matches then reject will drop
     the entire job (config) from the list.
     """
-
+    seed = kwargs.setdefault('seed', 1)
+    base_config = kwargs.setdefault('base_config', JobConfig())
+    if not isinstance(seed, int):
+        log.debug("no valid seed input: using 1")
+        seed = 1
+    log.debug("configuring Lua randomseed to %d", seed)
+    L.execute(f'local math = require"math"; math.randomseed({seed});')
     new_script = L.eval('new_script')
     yaml_cache = {}
     for desc, paths in configs:
@@ -123,8 +130,8 @@ def config_merge(configs, suite_name=None, **kwargs):
         if suite_name is not None:
             desc = combine_path(suite_name, desc)
 
-        yaml_complete_obj = {}
-        deep_merge(yaml_complete_obj, TEUTHOLOGY_TEMPLATE)
+        yaml_complete_obj = copy.deepcopy(base_config.to_dict())
+        deep_merge(yaml_complete_obj, dict(TEUTHOLOGY_TEMPLATE))
         for path in paths:
             if path not in yaml_cache:
                 with open(path) as f:
