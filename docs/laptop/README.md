@@ -52,7 +52,7 @@ docker network create paddles
 Start postgres containers in order to use paddles:
 
 ```bash
-mkdir $HOME/.teuthology/postgres
+mkdir -p $HOME/.teuthology/postgres
 docker run -d -p 5432:5432 --network paddles --name paddles-postgres \
     -e POSTGRES_PASSWORD=secret \
     -e POSTGRES_USER=paddles \
@@ -60,6 +60,10 @@ docker run -d -p 5432:5432 --network paddles --name paddles-postgres \
     -e PGDATA=/var/lib/postgresql/data/pgdata \
     -v $HOME/.teuthology/postgres:/var/lib/postgresql/data postgres
 ```
+
+NOTE. When running container on MacOS X using podman postgres may experience
+troubles with volume directory binds because of podman machine,  thus use regular
+volumes like `-v paddlesdb:/var/lib/postgresql/data`.
 
 ### Run paddles
 
@@ -72,11 +76,15 @@ cd ~/paddles && docker build . --file Dockerfile --tag paddles
 Run the container with previously created network:
 
 ```bash
-docker run -d --network paddles --name api -p 80:8080 \
-	-e PADDLES_SERVER_HOST=0.0.0.0 \
-	-e PADDLES_SQLALCHEMY_URL=postgresql+psycopg2://paddles:secret@paddles-postgres/paddles \
-	paddles
+docker run -d --network paddles --name api -p 8080:8080 \
+    -e PADDLES_SERVER_HOST=0.0.0.0 \
+    -e PADDLES_SQLALCHEMY_URL=postgresql+psycopg2://paddles:secret@paddles-postgres/paddles \
+    -e PADDLES_JOB_LOG_HREF_TEMPL='http://localhost:8888/{run_name}/{job_id}/teuthology.log' \
+    paddles
 ```
+
+Note: we provide job log href template here, so the logs can be referenced logs in archive share
+correctly, for details see below in `Run dispatcher` section.
 
 ### Run pulpito
 
@@ -332,7 +340,21 @@ For further usage nodes should be unlocked with `--unlock` option.
 
 ### Run beanstalkd
 
-For openSUSE there is no beanstalkd package as for Ubuntu, so it is needed to add corresponding repo:
+Build and run beanstalkd container.
+```bash
+cd teuthology/beanstalk/alpine &&
+   podman build . --file Dockerfile --tag beanstalkd
+
+podman run -d --network paddles --name queue -p 11300:11300 beanstalkd
+```
+
+
+
+Alternatively, beanstalkd can be installed as a service.
+
+Note:
+For openSUSE there is no beanstalkd package as for Ubuntu, so it is needed
+to add corresponding repo:
 
 ```bash
 zypper addrepo https://download.opensuse.org/repositories/filesystems:/ceph:/teuthology/openSUSE_Leap_15.2/x86_64/ teuthology && zypper ref
@@ -345,21 +367,26 @@ sudo zypper in beanstalkd
 sudo service beanstalkd start
 ```
 
-### Run worker
+### Run dispatcher
 
-Create archive and worker log directories and run the worker polling required tube.
+Create and share archive directory.
 
 ```bash
-TEUTH_HOME=$HOME/.teuthology
-mkdir -p $TEUTH_HOME/www/logs/jobs
-mkdir -p $TEUTH_HOME/www/logs/workers
+mkdir -p ~/.teuthology/archive
 
-teuthology-worker -v --tube vps --archive-dir $TEUTH_HOME/www/logs/jobs --log-dir $TEUTH_HOME/www/logs/workers
+podman run --name archive -v $HOME/.teuthology/archive:/usr/local/apache2/htdocs/ -d -p 8888:80 httpd:2.4
+```
+
+Run teuthology dispatcher against 'vps' machine type.
+
+```bash
+mkdir -p ~/.teuthology/dispatcher
+teuthology-dispatcher -v -a ~/.teuthology/archive -t vps -l ~/.teuthology/dispatcher
 ```
 
 Schedule a dummy job:
 ```bash
-teuthology-suite -v --ceph-repo https://github.com/ceph/ceph --suite-repo https://github.com/ceph/ceph --ceph octopus --suite dummy -d centos -D 8.2 --sha1 35adebe94e8b0a17e7b56379a8bf24e5f7b8ced4 --limit 1 -m vps -t refs/pull/1548/merge
+teuthology-suite -v --ceph-repo https://github.com/ceph/ceph --suite-repo https://github.com/ceph/ceph --ceph main --suite dummy -d ubuntu --sha1 35adebe94e8b0a17e7b56379a8bf24e5f7b8ced4 --limit 1 -m vps -t refs/pull/2023/merge
 ```
 
 ## Downburst
@@ -396,13 +423,7 @@ sha512sum opensuse-tumbleweed-20200810-cloudimg-amd64.img | cut -d' ' -f1 > open
 run webserver localy:
 
 ```bash
-(cd $TEUTH_HOME/www && python -m SimpleHTTPServer 8181)
-```
-
-or
-
-```bash
-(cd $TEUTH_HOME/www && python3 -m http.server 8181)
+podman run --name downburst-discovery -v $HOME/.teuthology/www:/usr/local/apache2/htdocs/ -d -p 8181:80 httpd:2.4
 ```
 
 ```bash

@@ -1,3 +1,4 @@
+import datetime
 import logging
 import os
 import requests
@@ -8,6 +9,7 @@ from teuthology import misc
 from teuthology.config import config
 from teuthology.contextutil import safe_while
 from teuthology.util.compat import urlencode
+from teuthology.util.time import parse_timestamp
 
 
 log = logging.getLogger(__name__)
@@ -125,17 +127,18 @@ def find_stale_locks(owner=None) -> List[Dict]:
     # running
     result = list()
     for node in nodes:
-        if node_active_job(node["name"]):
+        if node_active_job(node["name"], grace_time=5):
             continue
         result.append(node)
     return result
 
-def node_active_job(name: str, status: Union[dict, None] = None) -> Union[str, None]:
+def node_active_job(name: str, status: Union[dict, None] = None, grace_time: int = 0) -> Union[str, None]:
     """
     Is this node's job active (e.g. running or waiting)?
 
     :param node:  The node dict as returned from the lock server
     :param cache: A set() used for caching results
+    :param grace: A period of time (in mins) after job finishes before we consider the node inactive
     :returns:     A string if the node has an active job, or None if not
     """
     status = status or get_status(name)
@@ -143,18 +146,39 @@ def node_active_job(name: str, status: Union[dict, None] = None) -> Union[str, N
         # This should never happen with a normal node
         return "node had no status"
     description = status['description']
+    if '/' not in description:
+        # technically not an "active job", but someone locked the node
+        # for a different purpose and is likely still using it.
+        return description
     (run_name, job_id) = description.split('/')[-2:]
     if not run_name or job_id == '':
         # We thought this node might have a stale job, but no.
         return "node description does not contained scheduled job info"
     url = f"{config.results_server}/runs/{run_name}/jobs/{job_id}/"
     job_status = ""
+    active = True
     with safe_while(
             sleep=1, increment=0.5, action='node_is_active') as proceed:
         while proceed():
             resp = requests.get(url)
             if resp.ok:
-                job_status = resp.json()["status"]
+                job_obj = resp.json()
+                job_status = job_obj["status"]
+                active = job_status and job_status not in ('pass', 'fail', 'dead')
+                if active:
+                    break
+                job_updated = job_obj["updated"]
+                if not grace_time:
+                    break
+                try:
+                    delta = datetime.datetime.now(datetime.timezone.utc) - parse_timestamp(job_updated)
+                    active = active or delta < datetime.timedelta(minutes=grace_time)
+                except Exception:
+                    log.exception(f"{run_name}/{job_id} updated={job_updated}")
                 break
-    if job_status and job_status not in ('pass', 'fail', 'dead'):
+            elif resp.status_code == 404:
+                break
+            else:
+                log.debug(f"Error {resp.status_code} listing job {run_name}/{job_id} for {name}: {resp.text}")
+    if active:
         return description
