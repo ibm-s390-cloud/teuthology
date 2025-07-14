@@ -87,7 +87,7 @@ DISTRO_CODENAME_MAP = {
 }
 
 DEFAULT_OS_VERSION = dict(
-    ubuntu="23.10",
+    ubuntu="24.04",
     fedora="25",
     centos="9.stream",
     opensuse="15.4",
