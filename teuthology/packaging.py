@@ -486,7 +486,7 @@ class GitbuilderProject(object):
         """
         Initializes the class from a teuthology job config
         """
-        self.arch = self.job_config.get('arch', 'x86_64')
+        self.arch = self.job_config.get('arch', 's390x')
         self.os_type = self.job_config.get("os_type")
         self.flavor = self.job_config.get("flavor")
         self.codename = self.job_config.get("codename")
@@ -847,7 +847,7 @@ class GitbuilderProject(object):
 class ShamanProject(GitbuilderProject):
     def __init__(self, project, job_config, ctx=None, remote=None):
         super(ShamanProject, self).__init__(project, job_config, ctx, remote)
-        self.query_url = 'https://%s/api/' % config.shaman_host
+        self.query_url = 'http://%s/api/' % config.shaman_host
 
         # Force to use the "noarch" instead to build the uri.
         self.force_noarch = self.job_config.get("shaman", {}).get("force_noarch", False)
@@ -878,7 +878,7 @@ class ShamanProject(GitbuilderProject):
         req_obj = OrderedDict()
         req_obj['status'] = 'ready'
         req_obj['project'] = self.project
-        req_obj['flavor'] = flavor
+        req_obj['flavor'] = 'default'
         arch = "noarch" if self.force_noarch else self.arch
         req_obj['distros'] = '%s/%s' % (self.distro, arch)
         ref_name, ref_val = list(self._choose_reference().items())[0]

@@ -124,9 +124,11 @@ def get_distro_defaults(distro, machine_type):
     Given a distro (e.g. 'ubuntu') and machine type, return:
         (arch, release, pkg_type)
     """
-    arch = 'x86_64'
+    arch = 's390x'
     if distro in (None, 'None', 'rhel'):
-        distro = 'centos'
+        distro = 'ubuntu'
+        os_version = '24.04'
+        machine_type == 'b3e060' # machine_type == 'm1306'
 
     try:
         os_version = DEFAULT_OS_VERSION[distro]
@@ -224,8 +226,8 @@ def get_branch_info(project, branch, project_owner='ceph'):
 
 
 @functools.lru_cache()
-def package_version_for_hash(hash, flavor='default', distro='rhel',
-                             distro_version='8.0', machine_type='smithi'):
+def package_version_for_hash(hash, flavor='default', distro='ubuntu',
+                             distro_version='24.04', machine_type='b3e060'):
     """
     Does what it says on the tin. Uses gitbuilder repos.
 
