@@ -226,7 +226,7 @@ def get_branch_info(project, branch, project_owner='ceph'):
 
 
 @functools.lru_cache()
-def package_version_for_hash(hash, flavor='default', distro='ubuntu',
+def package_version_for_hash(hash, flavor='default', distro='rhel',
                              distro_version='9.6', machine_type='b3e060'):
     """
     Does what it says on the tin. Uses gitbuilder repos.
