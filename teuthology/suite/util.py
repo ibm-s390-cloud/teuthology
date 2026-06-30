@@ -247,10 +247,10 @@ def package_version_for_hash(hash, flavor='default', distro='rhel',
         ),
     )
 
-    if (bp.distro == CONTAINER_DISTRO and bp.flavor == CONTAINER_FLAVOR and 
-            not bp.build_complete):
-        log.info("Container build incomplete")
-        return None
+    # if (bp.distro == CONTAINER_DISTRO and bp.flavor == CONTAINER_FLAVOR and 
+    #         not bp.build_complete):
+    #     log.info("Container build incomplete")
+    #     return None
 
     try:
         return bp.version
