@@ -541,8 +541,7 @@ class GitbuilderProject(object):
         :returns: The version number of the project as a string.
         """
         if not hasattr(self, '_version'):
-            #self._version = self._get_package_version()
-            self._version = "20.2.1-263.0.TEST.ceph_9.1_rhel_patches_smcd.el9cp"
+            self._version = self._get_package_version()
         return self._version
 
     @property
