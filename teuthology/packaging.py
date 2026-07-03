@@ -699,21 +699,24 @@ class GitbuilderProject(object):
                 for n, v in zip(names, vars):
                     log.info('%s: %s' % (n, v))
 
-        if ref:
-            warn('ref')
-            return dict(ref=ref)
-        elif tag:
-            warn('tag')
-            return dict(tag=tag)
-        elif branch:
-            warn('branch')
-            return dict(branch=branch)
-        elif sha1:
-            warn('sha1')
-            return dict(sha1=sha1)
-        else:
-            log.warning("defaulting to main branch")
-            return dict(branch='main')
+        # if ref:
+        #     warn('ref')
+        #     return dict(ref=ref)
+        # elif tag:
+        #     warn('tag')
+        #     return dict(tag=tag)
+        # elif branch:
+        #     warn('branch')
+        #     return dict(branch=branch)
+        # elif sha1:
+        #     warn('sha1')
+        #     return dict(sha1=sha1)
+        # else:
+        #     log.warning("defaulting to main branch")
+        #     return dict(branch='main')
+
+        warn('sha1')
+        return dict(sha1=sha1)
 
     def _get_base_url(self):
         """
